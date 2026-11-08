@@ -1,29 +1,95 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Smarter Browser AI</title>
-  <style>
-    body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; background: #f9f9f9; }
-    #chat { border: 1px solid #ccc; height: 400px; overflow-y: scroll; padding: 10px; margin-bottom: 10px; background: white; border-radius: 8px; }
-    .message { margin: 8px 0; padding: 6px 10px; border-radius: 6px; }
-    .user { background: #e3f2fd; text-align: right; }
-    .assistant { background: #f1f8e9; }
-    #status { color: #555; font-size: 0.9em; margin-bottom: 10px; }
-    textarea { width: 100%; height: 60px; padding: 8px; border-radius: 6px; border: 1px solid #ccc; }
-    button { margin-top: 8px; padding: 8px 16px; cursor: pointer; border-radius: 6px; border: none; background: #0078d4; color: white; font-weight: bold; }
-    button:disabled { background: #aaa; }
-  </style>
-</head>
-<body>
-  <h1>My Smarter Browser AI</h1>
-  <div id="status">Loading model... (this may take a minute, ~1.7 GB download the first time)</div>
-  <div id="chat"></div>
-  <textarea id="input" placeholder="Type your message here..."></textarea>
-  <br />
-  <button id="send" disabled>Send</button>
-  <button id="export">Export Chat</button>
-  <script type="module" src="/src/main.ts"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Local Chat</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div>
+          <h1>Local Chat</h1>
+          <p class="sub">Runs on your own GPU. Nothing leaves the device.</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="settings-toggle" class="ghost" type="button">Settings</button>
+          <button id="export" class="ghost" type="button">Export</button>
+          <button id="clear" class="ghost" type="button">Clear</button>
+        </div>
+      </header>
+
+      <section id="loader" class="loader" aria-labelledby="loader-title">
+        <h2 id="loader-title" class="sr-only">Model loader</h2>
+        <p id="status" role="status" aria-live="polite">Checking WebGPU…</p>
+        <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="bar-fill"></div>
+        </div>
+        <div class="loader-row">
+          <label class="sr-only" for="model-select">Model</label>
+          <select id="model-select">
+            <option value="q4f16">2.6B · Q4F16 · WebGPU · 1.7 GB</option>
+            <option value="q4">2.6B · Q4 · widest support · 1.9 GB</option>
+          </select>
+          <button id="load" type="button">Load model</button>
+          <button id="unload" class="ghost" type="button" hidden>Free memory</button>
+        </div>
+        <p class="hint">
+          Weights download once, then your browser caches them. A 2.6B model on CPU works but is slow.
+        </p>
+      </section>
+
+      <main id="chat" class="chat" role="log" aria-live="polite" aria-label="Conversation">
+        <p class="empty">No messages yet. Load a model to start.</p>
+      </main>
+
+      <form id="composer" class="composer">
+        <label class="sr-only" for="input">Message</label>
+        <textarea id="input" rows="1" placeholder="Message the model…" disabled></textarea>
+        <div class="composer-actions">
+          <button id="send" type="submit" disabled>Send</button>
+          <button id="stop" class="ghost" type="button" hidden>Stop</button>
+        </div>
+      </form>
+    </div>
+
+    <dialog id="settings" class="panel">
+      <form method="dialog" class="panel-body">
+        <h2>Settings</h2>
+
+        <label>
+          Temperature <output id="temp-out"></output>
+          <input id="temp" type="range" min="0" max="1.5" step="0.05" />
+        </label>
+        <label>
+          Top-p <output id="topp-out"></output>
+          <input id="topp" type="range" min="0.1" max="1" step="0.05" />
+        </label>
+        <label>
+          Max new tokens <output id="tokens-out"></output>
+          <input id="tokens" type="range" min="64" max="2048" step="64" />
+        </label>
+        <label>
+          Repetition penalty <output id="rep-out"></output>
+          <input id="rep" type="range" min="1" max="1.4" step="0.01" />
+        </label>
+        <label>
+          Turns of history sent as context <output id="turns-out"></output>
+          <input id="turns" type="range" min="0" max="40" step="2" />
+        </label>
+        <label>
+          System prompt
+          <textarea id="system" rows="3"></textarea>
+        </label>
+
+        <div class="panel-actions">
+          <button id="reset-settings" class="ghost" type="button">Reset</button>
+          <button value="close">Done</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
 </html>
