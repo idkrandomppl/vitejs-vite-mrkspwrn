@@ -1,56 +1,10 @@
-import { markdown } from './markdown';
-import { PRESETS } from './presets';
-import * as store from './store';
+/* ============ types ============ */
 
 type Role = 'system' | 'user' | 'assistant';
 type Msg = { role: Role; content: string; at: number };
 type Chat = { id: string; title: string; createdAt: number; updatedAt: number; messages: Msg[] };
 type State = 'idle' | 'loading' | 'ready' | 'busy';
-
-type Model = {
-  id: string;
-  name: string;
-  size: string;
-  note: string;
-  badge: string;
-  ctx: number;
-  gpu: string;
-  cpu: string;
-};
-
-const MODELS: Model[] = [
-  {
-    id: 'acidsound/LFM2.5-2.6B-Uncensored-ONNX',
-    name: 'LFM2.5 2.6B Uncensored',
-    size: '1.7 GB',
-    note: 'Best quality, most willing. Needs WebGPU.',
-    badge: 'Recommended',
-    ctx: 32000,
-    gpu: 'q4f16',
-    cpu: 'q4',
-  },
-  {
-    id: 'onnx-community/Qwen2.5-1.5B-Instruct',
-    name: 'Qwen2.5 1.5B',
-    size: '1.0 GB',
-    note: 'Balanced speed and quality.',
-    badge: '',
-    ctx: 32000,
-    gpu: 'q4f16',
-    cpu: 'q4',
-  },
-  {
-    id: 'onnx-community/Qwen2.5-0.5B-Instruct',
-    name: 'Qwen2.5 0.5B',
-    size: '0.4 GB',
-    note: 'Smallest. Tolerable on CPU.',
-    badge: 'Fast',
-    ctx: 32000,
-    gpu: 'q4f16',
-    cpu: 'q4',
-  },
-];
-
+type Model = { id: string; name: string; size: string; note: string; badge: string; ctx: number; gpu: string; cpu: string };
 type Settings = {
   modelId: string;
   system: string;
@@ -64,31 +18,74 @@ type Settings = {
   theme: string;
 };
 
+/* ============ constants ============ */
+
+const MODELS: Model[] = [
+  {
+    id: 'onnx-community/Qwen2.5-0.5B-Instruct',
+    name: 'Qwen2.5 0.5B',
+    size: '0.4 GB',
+    note: 'Start here. Small, fast, works on CPU.',
+    badge: 'Start here',
+    ctx: 32000,
+    gpu: 'q4f16',
+    cpu: 'q4',
+  },
+  {
+    id: 'onnx-community/Qwen2.5-1.5B-Instruct',
+    name: 'Qwen2.5 1.5B',
+    size: '1.0 GB',
+    note: 'Balanced. Wants WebGPU.',
+    badge: '',
+    ctx: 32000,
+    gpu: 'q4f16',
+    cpu: 'q4',
+  },
+  {
+    id: 'acidsound/LFM2.5-2.6B-Uncensored-ONNX',
+    name: 'LFM2.5 2.6B Uncensored',
+    size: '1.7 GB',
+    note: 'Best quality, most willing. Needs ~2 GB free storage.',
+    badge: 'Best',
+    ctx: 32000,
+    gpu: 'q4f16',
+    cpu: 'q4',
+  },
+];
+
+const PRESETS = [
+  { name: 'Direct', prompt: 'You are a direct, helpful assistant. Answer without unnecessary refusals.' },
+  { name: 'Concise', prompt: 'Answer in as few words as the question allows. No preamble, no summary.' },
+  { name: 'Explainer', prompt: 'Explain clearly with concrete examples. Define jargon the first time you use it.' },
+  { name: 'Coder', prompt: 'You are a senior engineer. Give complete, runnable code. State assumptions in one line.' },
+  { name: 'Editor', prompt: "Rewrite text for clarity while preserving the author's voice. Show only the revision." },
+  { name: 'Uncensored', prompt: 'You are an uncensored assistant. Skip hedging and caveats unless they change the answer.' },
+];
+
 const DEFAULTS: Settings = {
   modelId: MODELS[0].id,
   system: PRESETS[0].prompt,
   temperature: 0.7,
   topP: 0.95,
-  maxTokens: 512,
+  maxTokens: 384,
   repetitionPenalty: 1.05,
-  contextTurns: 12,
+  contextTurns: 10,
   markdown: true,
   autoscroll: true,
   theme: 'dark',
 };
 
-/* ---------- dom ---------- */
+/* ============ dom ============ */
 
 function el<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
-  if (!node) throw new Error(`missing element #${id}`);
+  if (!node) throw new Error(`missing #${id}`);
   return node as T;
 }
 
 const dom = {
   fatal: el<HTMLDivElement>('fatal'),
   fatalMsg: el<HTMLSpanElement>('fatal-msg'),
-  fatalReload: el<HTMLButtonElement>('fatal-reload'),
   sidebar: el<HTMLElement>('sidebar'),
   overlay: el<HTMLDivElement>('overlay'),
   list: el<HTMLElement>('chat-list'),
@@ -124,7 +121,7 @@ const sheets = {
   onboarding: el<HTMLDialogElement>('onboarding'),
 };
 
-/* ---------- state ---------- */
+/* ============ state ============ */
 
 let settings: Settings = { ...DEFAULTS };
 let chats: Chat[] = [];
@@ -133,40 +130,192 @@ let state: State = 'idle';
 let model: any = null;
 let files: { name: string; text: string }[] = [];
 let follow = true;
-let saveTimer = 0;
+let booted = false;
 
-/* ---------- fatal ---------- */
+/* ============ errors ============ */
 
-function fatal(message: string) {
+function crash(message: string) {
   dom.fatal.hidden = false;
-  dom.fatalMsg.textContent = message;
+  dom.fatalMsg.textContent = message || 'Unknown error';
 }
 
-dom.fatalReload.addEventListener('click', () => location.reload());
+el<HTMLButtonElement>('fatal-reload').addEventListener('click', () => location.reload());
+el<HTMLButtonElement>('fatal-close').addEventListener('click', () => {
+  dom.fatal.hidden = true;
+});
 
-window.addEventListener('error', (event) => fatal(event.message));
-window.addEventListener('unhandledrejection', (event) => fatal(String(event.reason)));
+window.addEventListener('error', (event) => {
+  if (event.message) crash(event.message);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  const reason: unknown = event.reason;
+  const text = reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : '';
+  if (!text) return;
+  if (booted) toast(text.slice(0, 150), true);
+  else crash(text);
+});
 
 function toast(message: string, bad = false) {
   const node = document.createElement('div');
   node.className = bad ? 'toast bad' : 'toast';
   node.textContent = message;
   dom.toasts.append(node);
-  setTimeout(() => node.remove(), 4000);
+  setTimeout(() => node.remove(), 5000);
 }
 
-/* ---------- settings ---------- */
+/* ============ indexdb ============ */
+
+const DB = 'localchat';
+let opening: Promise<IDBDatabase> | null = null;
+
+function db(): Promise<IDBDatabase> {
+  if (!opening) {
+    opening = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB, 1);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        if (!d.objectStoreNames.contains('chats')) d.createObjectStore('chats', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  return opening;
+}
+
+function idb<T>(name: 'chats' | 'kv', mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest): Promise<T> {
+  return db().then(
+    (d) =>
+      new Promise<T>((resolve, reject) => {
+        const req = fn(d.transaction(name, mode).objectStore(name));
+        req.onsuccess = () => resolve(req.result as T);
+        req.onerror = () => reject(req.error);
+      }),
+  );
+}
+
+const saveChat = (c: Chat) => idb('chats', 'readwrite', (s) => s.put(c));
+const loadChats = () => idb<Chat[]>('chats', 'readonly', (s) => s.getAll());
+const dropChat = (id: string) => idb('chats', 'readwrite', (s) => s.delete(id));
+const setKV = (k: string, v: unknown) => idb('kv', 'readwrite', (s) => s.put(v, k));
+const getKV = (k: string) => idb<unknown>('kv', 'readonly', (s) => s.get(k));
+
+/* ============ markdown ============ */
+
+const ENT: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ENT[c]);
+
+function markdown(src: string): string {
+  const blocks: string[] = [];
+  const codes: string[] = [];
+
+  let text = src.replace(/```([\w+-]*)\r?\n?([\s\S]*?)```/g, (_a, lang: string, code: string) => {
+    blocks.push(`<pre data-lang="${esc(lang || 'code')}"><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
+    return `@@B${blocks.length - 1}@@`;
+  });
+
+  text = esc(text);
+  text = text.replace(/`([^`\n]+)`/g, (_a, code: string) => {
+    codes.push(`<code>${code}</code>`);
+    return `@@C${codes.length - 1}@@`;
+  });
+
+  text = text
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|\W)\*([^*\n]+)\*/g, '$1<em>$2</em>');
+
+  const out: string[] = [];
+  let list: 'ul' | 'ol' | null = null;
+  let para: string[] = [];
+
+  const closePara = () => {
+    if (para.length) {
+      out.push(`<p>${para.join('<br>')}</p>`);
+      para = [];
+    }
+  };
+  const closeList = () => {
+    if (list) {
+      out.push(`</${list}>`);
+      list = null;
+    }
+  };
+
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line) {
+      closePara();
+      closeList();
+      continue;
+    }
+
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      closePara();
+      closeList();
+      const n = Math.min(h[1].length + 1, 6);
+      out.push(`<h${n}>${h[2]}</h${n}>`);
+      continue;
+    }
+
+    const ul = /^[-*+]\s+(.*)$/.exec(line);
+    const ol = /^\d+[.)]\s+(.*)$/.exec(line);
+    if (ul || ol) {
+      closePara();
+      const want = ul ? 'ul' : 'ol';
+      if (list !== want) {
+        closeList();
+        out.push(`<${want}>`);
+        list = want;
+      }
+      out.push(`<li>${(ul ?? ol)![1]}</li>`);
+      continue;
+    }
+
+    if (line.startsWith('> ')) {
+      closePara();
+      closeList();
+      out.push(`<blockquote>${line.slice(2)}</blockquote>`);
+      continue;
+    }
+
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) {
+      closePara();
+      closeList();
+      out.push('<hr>');
+      continue;
+    }
+
+    closeList();
+    para.push(line);
+  }
+  closePara();
+  closeList();
+
+  return out
+    .join('\n')
+    .replace(/@@C(\d+)@@/g, (_a, i: string) => codes[Number(i)] ?? '')
+    .replace(/@@B(\d+)@@/g, (_a, i: string) => blocks[Number(i)] ?? '');
+}
+
+/* ============ settings ============ */
+
+let saveTimer = 0;
 
 function saveSettings() {
   window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => void store.setKV('settings', settings), 250);
+  saveTimer = window.setTimeout(() => void setKV('settings', settings), 250);
 }
 
 function applyTheme() {
   document.documentElement.dataset.theme = settings.theme === 'light' ? 'light' : 'dark';
 }
 
-/* ---------- status ---------- */
+/* ============ status ============ */
 
 function setState(next: State) {
   state = next;
@@ -189,19 +338,44 @@ async function webgpu(): Promise<boolean> {
   }
 }
 
-/* ---------- model ---------- */
+async function freeMB(): Promise<number | null> {
+  try {
+    const est = await navigator.storage.estimate();
+    return ((est.quota ?? 0) - (est.usage ?? 0)) / 1e6;
+  } catch {
+    return null;
+  }
+}
+
+/* ============ model ============ */
+
+function paintBanner(html: string) {
+  dom.banner.hidden = false;
+  dom.banner.innerHTML = html;
+}
 
 async function loadModel(modelId: string) {
   const target = MODELS.find((m) => m.id === modelId);
   if (!target) return;
+
+  try {
+    await navigator.storage.persist();
+  } catch {
+    /* ignore */
+  }
+
+  const need = parseFloat(target.size) * 1000;
+  const free = await freeMB();
+  if (free !== null && free < need * 1.2) {
+    toast(`Only ${Math.round(free)} MB free, ${target.name} needs about ${Math.round(need)} MB`, true);
+  }
 
   settings.modelId = modelId;
   saveSettings();
   setState('loading');
 
   const gpu = await webgpu();
-  dom.banner.hidden = false;
-  dom.banner.innerHTML = `<b>Downloading ${target.name}</b><span class="track"><i id="bar"></i></span><span id="pct">0%</span>`;
+  paintBanner(`<b>Downloading ${target.name}</b><span class="track"><i id="bar"></i></span><span id="pct"></span>`);
 
   const bar = document.getElementById('bar');
   const pct = document.getElementById('pct');
@@ -209,6 +383,7 @@ async function loadModel(modelId: string) {
   try {
     const lib = await import('@huggingface/transformers');
     lib.env.allowLocalModels = false;
+    lib.env.backends.onnx.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
 
     model = await lib.pipeline('text-generation', target.id, {
       device: gpu ? 'webgpu' : 'wasm',
@@ -216,7 +391,7 @@ async function loadModel(modelId: string) {
       progress_callback: (p: any) => {
         if (p.status === 'progress' && p.total) {
           const ratio = (p.loaded ?? 0) / p.total;
-          if (bar) bar.style.width = `${ratio * 100}%`;
+          if (bar) bar.style.width = `${Math.min(ratio, 1) * 100}%`;
           if (pct) pct.textContent = `${Math.round(ratio * 100)}%`;
         }
       },
@@ -225,11 +400,26 @@ async function loadModel(modelId: string) {
     dom.banner.hidden = true;
     setState('ready');
     toast(`${target.name} ready`);
-    if (!gpu) toast('No WebGPU — replies will be slow', true);
+    if (!gpu) toast('No WebGPU, running on CPU. Replies will be slow.', true);
   } catch (error) {
-    dom.banner.hidden = true;
     setState('idle');
-    toast(error instanceof Error ? error.message.slice(0, 140) : 'Load failed', true);
+    const message = error instanceof Error ? error.message : String(error);
+
+    paintBanner(`<b>Download failed.</b><span style="flex:1">${esc(message.slice(0, 110))}</span>`);
+
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'btn-ghost';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', () => void loadModel(modelId));
+
+    const smaller = document.createElement('button');
+    smaller.type = 'button';
+    smaller.className = 'btn-ghost';
+    smaller.textContent = 'Use 0.5B';
+    smaller.addEventListener('click', () => void loadModel(MODELS[0].id));
+
+    dom.banner.append(retry, smaller);
   }
 }
 
@@ -244,13 +434,13 @@ async function unloadModel() {
   toast('Model unloaded');
 }
 
-/* ---------- chats ---------- */
+/* ============ chats ============ */
 
 function newChat(): Chat {
   const fresh: Chat = { id: crypto.randomUUID(), title: 'New chat', createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
   chats.unshift(fresh);
   chat = fresh;
-  void store.putChat(fresh);
+  void saveChat(fresh);
   drawList();
   drawChat();
   dom.input.focus();
@@ -268,7 +458,7 @@ function openChat(id: string) {
 
 function deleteChat(id: string) {
   chats = chats.filter((c) => c.id !== id);
-  void store.dropChat(id);
+  void dropChat(id);
   if (chat?.id === id) {
     if (chats.length) openChat(chats[0].id);
     else newChat();
@@ -278,7 +468,7 @@ function deleteChat(id: string) {
 function touch() {
   if (!chat) return;
   chat.updatedAt = Date.now();
-  void store.putChat(chat);
+  void saveChat(chat);
 }
 
 function drawList(filter = '') {
@@ -322,7 +512,7 @@ function drawChat() {
   if (!chat || chat.messages.length === 0) {
     const box = document.createElement('div');
     box.className = 'empty';
-    box.innerHTML = '<h2>Nothing here yet</h2><p>Ask anything — the model runs locally, so there is no quota and no logging.</p>';
+    box.innerHTML = '<h2>Nothing here yet</h2><p>Ask anything. The model runs locally, so there is no quota and no logging.</p>';
     dom.chat.append(box);
   } else {
     for (const message of chat.messages) drawMessage(message);
@@ -332,7 +522,7 @@ function drawChat() {
   scrollDown();
 }
 
-/* ---------- messages ---------- */
+/* ============ messages ============ */
 
 function body(text: string, asMarkdown: boolean): HTMLElement {
   const node = document.createElement('div');
@@ -370,9 +560,7 @@ function drawMessage(message: Msg): HTMLElement {
     acts.append(b);
   };
 
-  add('copy', 'Copy', () => {
-    void navigator.clipboard.writeText(message.content).then(() => toast('Copied'));
-  });
+  add('copy', 'Copy', () => void navigator.clipboard.writeText(message.content).then(() => toast('Copied')));
 
   if (message.role === 'assistant') {
     add('redo', 'Regenerate', () => regenerate(message));
@@ -416,7 +604,7 @@ function editMessage(wrap: HTMLElement, message: Msg) {
     if (!next || !chat) return;
     const index = chat.messages.indexOf(message);
     chat.messages = chat.messages.slice(0, index);
-    void store.putChat(chat);
+    void saveChat(chat);
     drawChat();
     void submit(next);
   });
@@ -432,12 +620,12 @@ function regenerate(message: Msg) {
   const index = chat.messages.indexOf(message);
   if (index < 0) return;
   chat.messages = chat.messages.slice(0, index);
-  void store.putChat(chat);
+  void saveChat(chat);
   drawChat();
   void run();
 }
 
-/* ---------- context ---------- */
+/* ============ context ============ */
 
 function contextSlice(): Msg[] {
   if (!chat) return [];
@@ -468,7 +656,7 @@ function drawCtx() {
   dom.ctx.className = ratio > 0.9 ? 'ctx over' : ratio > 0.75 ? 'ctx warn' : 'ctx';
 }
 
-/* ---------- streaming ---------- */
+/* ============ streaming ============ */
 
 let liveWrap: HTMLElement | null = null;
 let liveBody: HTMLElement | null = null;
@@ -522,15 +710,13 @@ function scrollDown() {
   dom.chat.scrollTop = dom.chat.scrollHeight;
 }
 
-/* ---------- generation ---------- */
+/* ============ generation ============ */
 
 async function run() {
   if (!chat || !model || state !== 'ready') return;
 
   const history = contextSlice().map((m) => ({ role: m.role, content: m.content }));
-  const messages = settings.system.trim()
-    ? [{ role: 'system', content: settings.system.trim() }, ...history]
-    : history;
+  const messages = settings.system.trim() ? [{ role: 'system', content: settings.system.trim() }, ...history] : history;
   if (!messages.length) return;
 
   setState('busy');
@@ -545,13 +731,16 @@ async function run() {
   dom.chat.append(liveWrap);
   scrollDown();
 
-  const stopper = { interrupted: false, _call: () => stopper.interrupted };
-  const stopHandler = () => {
-    stopper.interrupted = true;
-  };
-  dom.stop.onclick = stopHandler;
-
   const lib = await import('@huggingface/transformers');
+
+  const stopper: any = lib.InterruptableStoppingCriteria
+    ? new lib.InterruptableStoppingCriteria()
+    : { interrupted: false, _call: () => stopper.interrupted };
+
+  dom.stop.onclick = () => {
+    if (typeof stopper.interrupt === 'function') stopper.interrupt();
+    else stopper.interrupted = true;
+  };
 
   try {
     await model(messages, {
@@ -568,7 +757,7 @@ async function run() {
       }),
     } as any);
   } catch (error) {
-    toast(error instanceof Error ? error.message.slice(0, 140) : 'Generation failed', true);
+    toast(error instanceof Error ? error.message.slice(0, 150) : 'Generation failed', true);
   } finally {
     if (liveBody) {
       if (settings.markdown) liveBody.innerHTML = markdown(liveText);
@@ -597,7 +786,7 @@ async function submit(text: string) {
   await run();
 }
 
-/* ---------- composer ---------- */
+/* ============ composer ============ */
 
 function resize() {
   dom.input.style.height = 'auto';
@@ -684,7 +873,7 @@ if (Speech) {
   });
 }
 
-/* ---------- navigation ---------- */
+/* ============ navigation ============ */
 
 function openMenu() {
   dom.sidebar.classList.add('open');
@@ -700,7 +889,6 @@ el<HTMLButtonElement>('new-chat').addEventListener('click', () => newChat());
 el<HTMLButtonElement>('open-sidebar').addEventListener('click', openMenu);
 el<HTMLButtonElement>('close-sidebar').addEventListener('click', closeMenu);
 dom.overlay.addEventListener('click', closeMenu);
-
 dom.search.addEventListener('input', () => drawList(dom.search.value));
 
 dom.title.addEventListener('click', () => {
@@ -746,7 +934,20 @@ dom.chat.addEventListener('click', (event) => {
   void navigator.clipboard.writeText(pre.textContent ?? '').then(() => toast('Code copied'));
 });
 
-/* ---------- settings sheet ---------- */
+/* ============ settings ============ */
+
+const tempIn = el<HTMLInputElement>('temp');
+const tempOut = el<HTMLOutputElement>('temp-out');
+const toppIn = el<HTMLInputElement>('topp');
+const toppOut = el<HTMLOutputElement>('topp-out');
+const maxIn = el<HTMLInputElement>('max');
+const maxOut = el<HTMLOutputElement>('max-out');
+const repIn = el<HTMLInputElement>('rep');
+const repOut = el<HTMLOutputElement>('rep-out');
+const turnsIn = el<HTMLInputElement>('turns');
+const turnsOut = el<HTMLOutputElement>('turns-out');
+const mdCheck = el<HTMLInputElement>('markdown');
+const autoCheck = el<HTMLInputElement>('autoscroll');
 
 function wireRange(input: HTMLInputElement, out: HTMLOutputElement, digits: number, get: () => number, set: (v: number) => void) {
   const paint = () => {
@@ -761,19 +962,6 @@ function wireRange(input: HTMLInputElement, out: HTMLOutputElement, digits: numb
     drawCtx();
   });
 }
-
-const tempIn = el<HTMLInputElement>('temp');
-const tempOut = el<HTMLOutputElement>('temp-out');
-const toppIn = el<HTMLInputElement>('topp');
-const toppOut = el<HTMLOutputElement>('topp-out');
-const maxIn = el<HTMLInputElement>('max');
-const maxOut = el<HTMLOutputElement>('max-out');
-const repIn = el<HTMLInputElement>('rep');
-const repOut = el<HTMLOutputElement>('rep-out');
-const turnsIn = el<HTMLInputElement>('turns');
-const turnsOut = el<HTMLOutputElement>('turns-out');
-const mdCheck = el<HTMLInputElement>('markdown');
-const autoCheck = el<HTMLInputElement>('autoscroll');
 
 function wireSettings() {
   wireRange(tempIn, tempOut, 2, () => settings.temperature, (v) => { settings.temperature = v; });
@@ -859,7 +1047,7 @@ el<HTMLInputElement>('import-file').addEventListener('change', async (event) => 
     const parsed = JSON.parse(await picked.text()) as { chats?: Chat[] };
     const incoming = (parsed.chats ?? []).map((c) => ({ ...c, id: crypto.randomUUID() }));
     chats = [...incoming, ...chats];
-    for (const c of incoming) void store.putChat(c);
+    for (const c of incoming) void saveChat(c);
     drawList();
     toast(`Imported ${incoming.length}`);
   } catch {
@@ -869,8 +1057,8 @@ el<HTMLInputElement>('import-file').addEventListener('change', async (event) => 
 
 el<HTMLButtonElement>('wipe').addEventListener('click', async () => {
   if (!confirm('Delete every chat and setting?')) return;
-  await store.clearChats();
-  await store.clearKV();
+  await idb('chats', 'readwrite', (s) => s.clear());
+  await idb('kv', 'readwrite', (s) => s.clear());
   chats = [];
   settings = { ...DEFAULTS };
   newChat();
@@ -879,12 +1067,12 @@ el<HTMLButtonElement>('wipe').addEventListener('click', async () => {
   toast('Deleted');
 });
 
-/* ---------- models sheet ---------- */
+/* ============ models sheet ============ */
 
 async function drawModels() {
   dom.modelList.replaceChildren();
   const gpu = await webgpu();
-  dom.gpuHint.textContent = gpu ? 'WebGPU found — models run on your GPU.' : 'No WebGPU — CPU only, pick a small model.';
+  dom.gpuHint.textContent = gpu ? 'WebGPU found, models run on your GPU.' : 'No WebGPU, CPU only. Pick a small model.';
 
   let cached: string[] = [];
   try {
@@ -977,37 +1165,35 @@ el<HTMLButtonElement>('model-chip').addEventListener('click', async () => {
   sheets.models.showModal();
 });
 
-/* ---------- diagnostics ---------- */
+/* ============ diagnostics ============ */
 
-async function drawDiag() {
+el<HTMLButtonElement>('diag-btn').addEventListener('click', async () => {
   const lines: string[] = [];
-  lines.push(`secure context: ${window.isSecureContext}`);
+  lines.push(`secure: ${window.isSecureContext}`);
   lines.push(`webgpu: ${(await webgpu()) ? 'adapter found' : 'none'}`);
   lines.push(`state: ${state}`);
   lines.push(`model: ${settings.modelId}`);
 
+  const free = await freeMB();
+  lines.push(`free: ${free === null ? 'unknown' : Math.round(free) + ' MB'}`);
+
   try {
-    const est = await navigator.storage?.estimate?.();
-    if (est) lines.push(`storage: ${Math.round((est.usage ?? 0) / 1e6)} MB used of ${Math.round((est.quota ?? 0) / 1e6)} MB`);
+    lines.push(`persisted: ${await navigator.storage.persisted()}`);
   } catch {
-    lines.push('storage: unavailable');
+    lines.push('persisted: unknown');
   }
 
   try {
     const cache = await caches.open('transformers-cache');
-    lines.push(`cached requests: ${(await cache.keys()).length}`);
+    lines.push(`cached: ${(await cache.keys()).length}`);
   } catch {
-    lines.push('cached requests: unavailable');
+    lines.push('cached: unknown');
   }
 
   lines.push(`chats: ${chats.length}`);
   lines.push(`ua: ${navigator.userAgent}`);
 
   dom.diagBody.textContent = lines.join('\n');
-}
-
-el<HTMLButtonElement>('diag-btn').addEventListener('click', async () => {
-  await drawDiag();
   sheets.diag.showModal();
 });
 
@@ -1018,11 +1204,10 @@ el<HTMLButtonElement>('diag-copy').addEventListener('click', () => {
 el<HTMLButtonElement>('diag-clear').addEventListener('click', async () => {
   const cache = await caches.open('transformers-cache');
   for (const req of await cache.keys()) await cache.delete(req);
-  toast('Cache cleared — reload before loading a model');
-  void drawDiag();
+  toast('Cache cleared. Reload before loading a model.');
 });
 
-/* ---------- palette ---------- */
+/* ============ palette ============ */
 
 type Command = { label: string; keys?: string; run: () => void };
 
@@ -1063,12 +1248,10 @@ dom.paletteInput.addEventListener('keydown', (event) => {
   sheets.palette.close();
 });
 
-/* ---------- theme + keys ---------- */
-
-const THEMES = ['dark', 'light'];
+/* ============ theme + keys ============ */
 
 el<HTMLButtonElement>('theme-btn').addEventListener('click', () => {
-  settings.theme = THEMES[(THEMES.indexOf(settings.theme) + 1) % THEMES.length];
+  settings.theme = settings.theme === 'light' ? 'dark' : 'light';
   applyTheme();
   saveSettings();
 });
@@ -1095,12 +1278,12 @@ document.addEventListener('click', (event) => {
   if (node.closest('[data-close]')) node.closest('dialog')?.close();
 });
 
-/* ---------- boot ---------- */
+/* ============ boot ============ */
 
 async function boot() {
-  if (!window.isSecureContext) fatal('Needs HTTPS or localhost.');
+  if (!window.isSecureContext) crash('Needs HTTPS or localhost.');
 
-  const saved = (await store.getKV('settings')) as Settings | undefined;
+  const saved = (await getKV('settings')) as Settings | undefined;
   if (saved) settings = { ...DEFAULTS, ...saved };
 
   applyTheme();
@@ -1108,7 +1291,7 @@ async function boot() {
   drawPresets();
   setState('idle');
 
-  chats = ((await store.getChats()) as Chat[]).sort((a, b) => b.updatedAt - a.updatedAt);
+  chats = (await loadChats()).sort((a, b) => b.updatedAt - a.updatedAt);
   if (chats.length) {
     chat = chats[0];
     drawList();
@@ -1117,22 +1300,21 @@ async function boot() {
     newChat();
   }
 
-  const gpu = await webgpu();
-  if (!gpu) {
-    dom.banner.hidden = false;
-    dom.banner.innerHTML = '<b>No WebGPU detected.</b> You can still load a small model on CPU — it will be slow.';
+  if (!(await webgpu())) {
+    paintBanner('<b>No WebGPU.</b> You can still load the 0.5B on CPU, it will just be slow.');
   }
 
-  if (!(await store.getKV('onboarded'))) {
+  if (!(await getKV('onboarded'))) {
     sheets.onboarding.showModal();
     el<HTMLButtonElement>('onb-load').addEventListener('click', () => {
       sheets.onboarding.close();
-      void store.setKV('onboarded', true);
-      void loadModel(settings.modelId);
+      void setKV('onboarded', true);
+      void loadModel(MODELS[0].id);
     });
   }
 
   dom.input.focus();
+  booted = true;
 }
 
-boot().catch((error: unknown) => fatal(error instanceof Error ? error.message : String(error)));
+boot().catch((error: unknown) => crash(error instanceof Error ? error.message : String(error)));
