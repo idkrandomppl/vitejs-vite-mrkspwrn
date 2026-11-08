@@ -1,40 +1,38 @@
-const DB_NAME = 'localchat';
-const VERSION = 1;
+const DB = 'localchat';
+let opening: Promise<IDBDatabase> | null = null;
 
-type Stores = 'chats' | 'kv';
-
-let dbp: Promise<IDBDatabase> | null = null;
-
-function open(): Promise<IDBDatabase> {
-  dbp ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains('chats')) db.createObjectStore('chats', { keyPath: 'id' });
-      if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-  return dbp;
+function db(): Promise<IDBDatabase> {
+  if (!opening) {
+    opening = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB, 1);
+      req.onupgradeneeded = () => {
+        const d = req.result;
+        if (!d.objectStoreNames.contains('chats')) d.createObjectStore('chats', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  return opening;
 }
 
-function tx<T>(store: Stores, mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
-  return open().then(
-    (db) =>
+function run<T>(name: 'chats' | 'kv', mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest): Promise<T> {
+  return db().then(
+    (d) =>
       new Promise<T>((resolve, reject) => {
-        const t = db.transaction(store, mode);
-        const req = run(t.objectStore(store));
-        req.onsuccess = () => resolve(req.result);
+        const req = fn(d.transaction(name, mode).objectStore(name));
+        req.onsuccess = () => resolve(req.result as T);
         req.onerror = () => reject(req.error);
       }),
   );
 }
 
-export const put = <T>(store: Stores, value: T, key?: string) =>
-  key === undefined ? tx(store, 'readwrite', (s) => s.put(value)) : tx(store, 'readwrite', (s) => s.put(value, key));
+export const putChat = (value: unknown) => run<IDBValidKey>('chats', 'readwrite', (s) => s.put(value));
+export const getChats = () => run<unknown[]>('chats', 'readonly', (s) => s.getAll());
+export const dropChat = (id: string) => run<void>('chats', 'readwrite', (s) => s.delete(id));
+export const clearChats = () => run<void>('chats', 'readwrite', (s) => s.clear());
 
-export const get = <T>(store: Stores, key: string) => tx<T | undefined>(store, 'readonly', (s) => s.get(key));
-export const del = (store: Stores, key: string) => tx(store, 'readwrite', (s) => s.delete(key));
-export const all = <T>(store: Stores) => tx<T[]>(store, 'readonly', (s) => s.getAll());
-export const clearStore = (store: Stores) => tx(store, 'readwrite', (s) => s.clear());
+export const setKV = (key: string, value: unknown) => run<IDBValidKey>('kv', 'readwrite', (s) => s.put(value, key));
+export const getKV = (key: string) => run<unknown>('kv', 'readonly', (s) => s.get(key));
+export const clearKV = () => run<void>('kv', 'readwrite', (s) => s.clear());
