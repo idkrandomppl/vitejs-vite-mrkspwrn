@@ -1,21 +1,19 @@
-const MAP: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-const esc = (s: string) => s.replace(/[&<>"']/g, (c) => MAP[c]);
+const ENT: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ENT[c]);
 
-export function renderMarkdown(src: string): string {
+export function markdown(src: string): string {
   const blocks: string[] = [];
-  const inlines: string[] = [];
+  const codes: string[] = [];
 
-  let text = src.replace(/```([\w+-]*)\n?([\s\S]*?)```/g, (_m, lang: string, code: string) => {
-    const i = blocks.push(
-      `<pre data-lang="${esc(lang || 'code')}"><code>${esc(code.replace(/\n$/, ''))}</code></pre>`,
-    ) - 1;
-    return `\u0000${i}\u0000`;
+  let text = src.replace(/```([\w+-]*)\r?\n?([\s\S]*?)```/g, (_all, lang: string, code: string) => {
+    blocks.push(`<pre data-lang="${esc(lang || 'code')}"><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
+    return `@@B${blocks.length - 1}@@`;
   });
 
   text = esc(text);
-  text = text.replace(/`([^`\n]+)`/g, (_m, code: string) => {
-    const i = inlines.push(`<code>${code}</code>`) - 1;
-    return `\u0001${i}\u0001`;
+  text = text.replace(/`([^`\n]+)`/g, (_all, code: string) => {
+    codes.push(`<code>${code}</code>`);
+    return `@@C${codes.length - 1}@@`;
   });
 
   text = text
@@ -29,7 +27,7 @@ export function renderMarkdown(src: string): string {
   let list: 'ul' | 'ol' | null = null;
   let para: string[] = [];
 
-  const flushPara = () => {
+  const closePara = () => {
     if (para.length) {
       out.push(`<p>${para.join('<br>')}</p>`);
       para = [];
@@ -45,24 +43,24 @@ export function renderMarkdown(src: string): string {
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (!line) {
-      flushPara();
+      closePara();
       closeList();
       continue;
     }
 
-    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (heading) {
-      flushPara();
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      closePara();
       closeList();
-      const level = Math.min(heading[1].length + 1, 6);
-      out.push(`<h${level}>${heading[2]}</h${level}>`);
+      const n = Math.min(h[1].length + 1, 6);
+      out.push(`<h${n}>${h[2]}</h${n}>`);
       continue;
     }
 
     const ul = /^[-*+]\s+(.*)$/.exec(line);
     const ol = /^\d+[.)]\s+(.*)$/.exec(line);
     if (ul || ol) {
-      flushPara();
+      closePara();
       const want = ul ? 'ul' : 'ol';
       if (list !== want) {
         closeList();
@@ -74,14 +72,14 @@ export function renderMarkdown(src: string): string {
     }
 
     if (line.startsWith('> ')) {
-      flushPara();
+      closePara();
       closeList();
       out.push(`<blockquote>${line.slice(2)}</blockquote>`);
       continue;
     }
 
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) {
-      flushPara();
+      closePara();
       closeList();
       out.push('<hr>');
       continue;
@@ -90,11 +88,11 @@ export function renderMarkdown(src: string): string {
     closeList();
     para.push(line);
   }
-  flushPara();
+  closePara();
   closeList();
 
   return out
     .join('\n')
-    .replace(/\u0001(\d+)\u0001/g, (_m, i: string) => inlines[Number(i)] ?? '')
-    .replace(/\u0000(\d+)\u0000/g, (_m, i: string) => blocks[Number(i)] ?? '');
+    .replace(/@@C(\d+)@@/g, (_all, i: string) => codes[Number(i)] ?? '')
+    .replace(/@@B(\d+)@@/g, (_all, i: string) => blocks[Number(i)] ?? '');
 }
