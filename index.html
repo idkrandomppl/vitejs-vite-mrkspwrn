@@ -1,94 +1,228 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="auto">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Local Chat</title>
+    <meta
+      name="description"
+      content="A private chat client that runs an uncensored language model entirely on your device."
+    />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://huggingface.co" />
+    <link rel="preconnect" href="https://cdn-lfs.huggingface.co" crossorigin />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <div class="app">
-      <header class="topbar">
-        <div>
-          <h1>Local Chat</h1>
-          <p class="sub">Runs on your own GPU. Nothing leaves the device.</p>
-        </div>
-        <div class="topbar-actions">
-          <button id="settings-toggle" class="ghost" type="button">Settings</button>
-          <button id="export" class="ghost" type="button">Export</button>
-          <button id="clear" class="ghost" type="button">Clear</button>
-        </div>
-      </header>
+    <svg class="sprite" aria-hidden="true">
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 8 6 8z" /></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" /></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h9" /></symbol>
+      <symbol id="i-redo" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 1 3 6.2M4 12V6m0 6h6" /></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16z" /></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" /></symbol>
+      <symbol id="i-speak" viewBox="0 0 24 24"><path d="M4 10v4h4l5 4V6L8 10z" /><path d="M17 9a4 4 0 0 1 0 6" /></symbol>
+      <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></symbol>
+      <symbol id="i-clip" viewBox="0 0 24 24"><path d="M8 12l7-7a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l7-7" /></symbol>
+      <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6" /></symbol>
+      <symbol id="i-cog" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" /></symbol>
+      <symbol id="i-chip" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" /><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4" /></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19" /></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5" /></symbol>
+    </svg>
 
-      <section id="loader" class="loader" aria-labelledby="loader-title">
-        <h2 id="loader-title" class="sr-only">Model loader</h2>
-        <p id="status" role="status" aria-live="polite">Checking WebGPU…</p>
-        <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-          <div id="bar-fill"></div>
+    <div class="shell" id="shell">
+      <aside class="sidebar" id="sidebar" aria-label="Chats">
+        <div class="side-top">
+          <button class="icon-btn lg" id="new-chat" title="New chat (Ctrl+Shift+O)" aria-label="New chat">
+            <svg><use href="#i-plus" /></svg>
+          </button>
+          <div class="side-title">Local Chat</div>
+          <button class="icon-btn only-mobile" id="close-sidebar" aria-label="Close sidebar">
+            <svg><use href="#i-x" /></svg>
+          </button>
         </div>
-        <div class="loader-row">
-          <label class="sr-only" for="model-select">Model</label>
-          <select id="model-select">
-            <option value="q4f16">2.6B · Q4F16 · WebGPU · 1.7 GB</option>
-            <option value="q4">2.6B · Q4 · widest support · 1.9 GB</option>
-          </select>
-          <button id="load" type="button">Load model</button>
-          <button id="unload" class="ghost" type="button" hidden>Free memory</button>
-        </div>
-        <p class="hint">
-          Weights download once, then your browser caches them. A 2.6B model on CPU works but is slow.
-        </p>
-      </section>
 
-      <main id="chat" class="chat" role="log" aria-live="polite" aria-label="Conversation">
-        <p class="empty">No messages yet. Load a model to start.</p>
-      </main>
+        <label class="search">
+          <svg><use href="#i-search" /></svg>
+          <input id="search" type="search" placeholder="Search chats" aria-label="Search chats" />
+        </label>
 
-      <form id="composer" class="composer">
-        <label class="sr-only" for="input">Message</label>
-        <textarea id="input" rows="1" placeholder="Message the model…" disabled></textarea>
-        <div class="composer-actions">
-          <button id="send" type="submit" disabled>Send</button>
-          <button id="stop" class="ghost" type="button" hidden>Stop</button>
+        <nav class="chat-list" id="chat-list" aria-label="Saved chats"></nav>
+
+        <div class="side-foot">
+          <button class="icon-btn" id="theme-btn" title="Theme" aria-label="Cycle theme">
+            <svg><use href="#i-sun" /></svg>
+          </button>
+          <button class="icon-btn" id="models-btn" title="Model library" aria-label="Model library">
+            <svg><use href="#i-chip" /></svg>
+          </button>
+          <button class="icon-btn" id="settings-btn" title="Settings" aria-label="Settings">
+            <svg><use href="#i-cog" /></svg>
+          </button>
+          <span class="side-note">Runs on your device</span>
         </div>
-      </form>
+      </aside>
+
+      <div class="main">
+        <header class="topbar">
+          <button class="icon-btn only-mobile" id="open-sidebar" aria-label="Open sidebar">
+            <svg><use href="#i-menu" /></svg>
+          </button>
+          <h1 class="chat-title" id="chat-title" tabindex="0" role="button" title="Rename">New chat</h1>
+          <div class="spacer"></div>
+          <button class="model-chip" id="model-chip" aria-haspopup="dialog">
+            <span class="dot" id="model-dot"></span>
+            <span id="model-name">No model</span>
+          </button>
+          <button class="icon-btn" id="export-btn" title="Export chat" aria-label="Export chat">
+            <svg><use href="#i-down" /></svg>
+          </button>
+        </header>
+
+        <div class="chat-wrap">
+          <main class="chat" id="chat" role="log" aria-live="polite" aria-label="Conversation"></main>
+          <button class="jump" id="jump" hidden aria-label="Scroll to latest">
+            <svg><use href="#i-down" /></svg>
+          </button>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="ctx" id="ctx" hidden>
+            <div class="ctx-bar"><div id="ctx-fill"></div></div>
+            <span id="ctx-label">0 / 0</span>
+          </div>
+
+          <form class="composer" id="composer">
+            <div class="attachments" id="attachments" hidden></div>
+            <textarea
+              id="input"
+              rows="1"
+              placeholder="Message the model…  (Enter to send, Shift+Enter for a newline)"
+              aria-label="Message"
+            ></textarea>
+            <div class="composer-row">
+              <button type="button" class="icon-btn" id="attach-btn" title="Attach a text file" aria-label="Attach a text file">
+                <svg><use href="#i-clip" /></svg>
+              </button>
+              <button type="button" class="icon-btn" id="mic-btn" title="Dictate" aria-label="Dictate" hidden>
+                <svg><use href="#i-mic" /></svg>
+              </button>
+              <span class="grow"></span>
+              <button type="submit" class="send" id="send" disabled>
+                <svg><use href="#i-send" /></svg>
+                <span>Send</span>
+              </button>
+              <button type="button" class="send stop" id="stop" hidden>
+                <svg><use href="#i-stop" /></svg>
+                <span>Stop</span>
+              </button>
+            </div>
+            <input type="file" id="file" accept=".txt,.md,.markdown,.json,.csv,.log,text/*" multiple hidden />
+          </form>
+        </div>
+      </div>
     </div>
 
-    <dialog id="settings" class="panel">
-      <form method="dialog" class="panel-body">
-        <h2>Settings</h2>
+    <!-- model library -->
+    <dialog class="sheet" id="models" aria-labelledby="models-title">
+      <div class="sheet-body">
+        <header class="sheet-head">
+          <h2 id="models-title">Model library</h2>
+          <button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-x" /></svg></button>
+        </header>
+        <p class="hint" id="gpu-hint"></p>
+        <div class="model-list" id="model-list"></div>
+        <p class="hint">Downloads are cached by your browser. Removing a model frees the disk space.</p>
+      </div>
+    </dialog>
 
-        <label>
-          Temperature <output id="temp-out"></output>
-          <input id="temp" type="range" min="0" max="1.5" step="0.05" />
-        </label>
-        <label>
-          Top-p <output id="topp-out"></output>
-          <input id="topp" type="range" min="0.1" max="1" step="0.05" />
-        </label>
-        <label>
-          Max new tokens <output id="tokens-out"></output>
-          <input id="tokens" type="range" min="64" max="2048" step="64" />
-        </label>
-        <label>
-          Repetition penalty <output id="rep-out"></output>
-          <input id="rep" type="range" min="1" max="1.4" step="0.01" />
-        </label>
-        <label>
-          Turns of history sent as context <output id="turns-out"></output>
-          <input id="turns" type="range" min="0" max="40" step="2" />
-        </label>
-        <label>
-          System prompt
-          <textarea id="system" rows="3"></textarea>
-        </label>
+    <!-- settings -->
+    <dialog class="sheet" id="settings" aria-labelledby="settings-title">
+      <form class="sheet-body" method="dialog">
+        <header class="sheet-head">
+          <h2 id="settings-title">Settings</h2>
+          <button class="icon-btn" type="button" data-close aria-label="Close"><svg><use href="#i-x" /></svg></button>
+        </header>
 
-        <div class="panel-actions">
-          <button id="reset-settings" class="ghost" type="button">Reset</button>
+        <fieldset>
+          <legend>Persona</legend>
+          <div class="presets" id="presets"></div>
+          <label class="field">
+            <span>System prompt</span>
+            <textarea id="system" rows="4"></textarea>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Sampling</legend>
+          <label class="field"><span>Temperature <output id="temp-out"></output></span>
+            <input id="temp" type="range" min="0" max="1.5" step="0.05" /></label>
+          <label class="field"><span>Top-p <output id="topp-out"></output></span>
+            <input id="topp" type="range" min="0.1" max="1" step="0.05" /></label>
+          <label class="field"><span>Max new tokens <output id="max-out"></output></span>
+            <input id="max" type="range" min="64" max="2048" step="64" /></label>
+          <label class="field"><span>Repetition penalty <output id="rep-out"></output></span>
+            <input id="rep" type="range" min="1" max="1.4" step="0.01" /></label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Conversation</legend>
+          <label class="field"><span>Context turns kept <output id="turns-out"></output></span>
+            <input id="turns" type="range" min="0" max="40" step="2" /></label>
+          <label class="row"><input id="markdown" type="checkbox" /> Render markdown</label>
+          <label class="row"><input id="autoscroll" type="checkbox" /> Follow output while streaming</label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Data</legend>
+          <div class="btn-row">
+            <button type="button" class="ghost" id="import-btn">Import chats</button>
+            <button type="button" class="ghost" id="export-all">Export all</button>
+            <button type="button" class="ghost danger" id="wipe">Delete everything</button>
+          </div>
+          <input type="file" id="import-file" accept="application/json" hidden />
+        </fieldset>
+
+        <div class="sheet-foot">
+          <button type="button" class="ghost" id="reset">Reset settings</button>
           <button value="close">Done</button>
         </div>
       </form>
     </dialog>
+
+    <!-- command palette -->
+    <dialog class="palette" id="palette" aria-label="Command palette">
+      <input id="palette-input" placeholder="Type a command…" aria-label="Command" autocomplete="off" />
+      <ul id="palette-list" role="listbox"></ul>
+    </dialog>
+
+    <!-- onboarding -->
+    <dialog class="sheet onboarding" id="onboarding" aria-labelledby="onb-title">
+      <div class="sheet-body">
+        <h2 id="onb-title">Chat privately, on your own machine</h2>
+        <p>
+          The model is downloaded once and executed by your GPU. Messages, prompts and weights never touch a
+          server after that — there is no account and no API key.
+        </p>
+        <ul class="ticks">
+          <li>Needs WebGPU: Edge 113+, Chrome 113+, or Safari 26+.</li>
+          <li>First model download is about 1.7 GB.</li>
+          <li>Everything is stored locally in your browser.</li>
+        </ul>
+        <div class="sheet-foot">
+          <button type="button" class="ghost" data-close>Browse first</button>
+          <button type="button" id="onb-load">Load the recommended model</button>
+        </div>
+      </div>
+    </dialog>
+
+    <div class="toasts" id="toasts" aria-live="polite"></div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>
