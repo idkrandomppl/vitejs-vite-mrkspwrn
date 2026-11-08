@@ -1,54 +1,53 @@
-import { renderMarkdown } from './markdown';
+import { markdown } from './markdown';
 import { PRESETS } from './presets';
-import { toast } from './toast';
-import { createPort, type Port } from './engine/client';
-import type { Res } from './engine/inference';
 import * as store from './store';
 
 type Role = 'system' | 'user' | 'assistant';
 type Msg = { role: Role; content: string; at: number };
 type Chat = { id: string; title: string; createdAt: number; updatedAt: number; messages: Msg[] };
+type State = 'idle' | 'loading' | 'ready' | 'busy';
 
 type Model = {
   id: string;
   name: string;
-  params: string;
   size: string;
-  ctx: number;
   note: string;
-  badge?: string;
-  dtype: { webgpu: string; wasm: string };
+  badge: string;
+  ctx: number;
+  gpu: string;
+  cpu: string;
 };
 
 const MODELS: Model[] = [
   {
     id: 'acidsound/LFM2.5-2.6B-Uncensored-ONNX',
     name: 'LFM2.5 2.6B Uncensored',
-    params: '2.6B',
     size: '1.7 GB',
-    ctx: 32000,
-    note: 'Best quality and most willing. Wants WebGPU.',
+    note: 'Best quality, most willing. Needs WebGPU.',
     badge: 'Recommended',
-    dtype: { webgpu: 'q4f16', wasm: 'q4' },
+    ctx: 32000,
+    gpu: 'q4f16',
+    cpu: 'q4',
   },
   {
     id: 'onnx-community/Qwen2.5-1.5B-Instruct',
-    name: 'Qwen2.5 1.5B Instruct',
-    params: '1.5B',
+    name: 'Qwen2.5 1.5B',
     size: '1.0 GB',
+    note: 'Balanced speed and quality.',
+    badge: '',
     ctx: 32000,
-    note: 'Balanced: quick replies, still coherent.',
-    dtype: { webgpu: 'q4f16', wasm: 'q4' },
+    gpu: 'q4f16',
+    cpu: 'q4',
   },
   {
     id: 'onnx-community/Qwen2.5-0.5B-Instruct',
-    name: 'Qwen2.5 0.5B Instruct',
-    params: '0.5B',
+    name: 'Qwen2.5 0.5B',
     size: '0.4 GB',
-    ctx: 32000,
-    note: 'Smallest and fastest. Good on CPU.',
+    note: 'Smallest. Tolerable on CPU.',
     badge: 'Fast',
-    dtype: { webgpu: 'q4f16', wasm: 'q4' },
+    ctx: 32000,
+    gpu: 'q4f16',
+    cpu: 'q4',
   },
 ];
 
@@ -62,7 +61,7 @@ type Settings = {
   contextTurns: number;
   markdown: boolean;
   autoscroll: boolean;
-  theme: 'auto' | 'dark' | 'light';
+  theme: string;
 };
 
 const DEFAULTS: Settings = {
@@ -75,131 +74,186 @@ const DEFAULTS: Settings = {
   contextTurns: 12,
   markdown: true,
   autoscroll: true,
-  theme: 'auto',
+  theme: 'dark',
 };
 
-const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+/* ---------- dom ---------- */
 
-const chatEl = $<HTMLDivElement>('chat');
-const inputEl = $<HTMLTextAreaElement>('input');
-const sendBtn = $<HTMLButtonElement>('send');
-const stopBtn = $<HTMLButtonElement>('stop');
-const titleEl = $<HTMLHeadingElement>('chat-title');
-const modelChip = $<HTMLButtonElement>('model-chip');
-const modelDot = $<HTMLSpanElement>('model-dot');
-const modelName = $<HTMLSpanElement>('model-name');
-const listEl = $<HTMLElement>('chat-list');
-const sidebar = $<HTMLElement>('sidebar');
-const ctxEl = $<HTMLDivElement>('ctx');
-const ctxFill = $<HTMLDivElement>('ctx-fill');
-const ctxLabel = $<HTMLSpanElement>('ctx-label');
-const attachEl = $<HTMLDivElement>('attachments');
-const jumpBtn = $<HTMLButtonElement>('jump');
+function el<T extends HTMLElement>(id: string): T {
+  const node = document.getElementById(id);
+  if (!node) throw new Error(`missing element #${id}`);
+  return node as T;
+}
+
+const dom = {
+  fatal: el<HTMLDivElement>('fatal'),
+  fatalMsg: el<HTMLSpanElement>('fatal-msg'),
+  fatalReload: el<HTMLButtonElement>('fatal-reload'),
+  sidebar: el<HTMLElement>('sidebar'),
+  overlay: el<HTMLDivElement>('overlay'),
+  list: el<HTMLElement>('chat-list'),
+  search: el<HTMLInputElement>('search'),
+  chat: el<HTMLElement>('chat'),
+  title: el<HTMLElement>('chat-title'),
+  input: el<HTMLTextAreaElement>('input'),
+  send: el<HTMLButtonElement>('send'),
+  stop: el<HTMLButtonElement>('stop'),
+  banner: el<HTMLDivElement>('banner'),
+  ctx: el<HTMLDivElement>('ctx'),
+  ctxFill: el<HTMLDivElement>('ctx-fill'),
+  ctxLabel: el<HTMLSpanElement>('ctx-label'),
+  files: el<HTMLDivElement>('attachments'),
+  jump: el<HTMLButtonElement>('jump'),
+  dot: el<HTMLSpanElement>('model-dot'),
+  modelName: el<HTMLSpanElement>('model-name'),
+  toasts: el<HTMLDivElement>('toasts'),
+  system: el<HTMLTextAreaElement>('system'),
+  presets: el<HTMLDivElement>('presets'),
+  modelList: el<HTMLDivElement>('model-list'),
+  gpuHint: el<HTMLParagraphElement>('gpu-hint'),
+  diagBody: el<HTMLPreElement>('diag-body'),
+  paletteInput: el<HTMLInputElement>('palette-input'),
+  paletteList: el<HTMLUListElement>('palette-list'),
+};
+
+const sheets = {
+  models: el<HTMLDialogElement>('models'),
+  settings: el<HTMLDialogElement>('settings'),
+  diag: el<HTMLDialogElement>('diag'),
+  palette: el<HTMLDialogElement>('palette'),
+  onboarding: el<HTMLDialogElement>('onboarding'),
+};
+
+/* ---------- state ---------- */
 
 let settings: Settings = { ...DEFAULTS };
 let chats: Chat[] = [];
 let chat: Chat | null = null;
-let port: Port | null = null;
-let state: 'idle' | 'loading' | 'ready' | 'busy' = 'idle';
-let attachments: { name: string; text: string }[] = [];
+let state: State = 'idle';
+let model: any = null;
+let files: { name: string; text: string }[] = [];
 let follow = true;
-let listening: { stop(): void } | null = null;
+let saveTimer = 0;
 
-/* ---------------- settings ---------------- */
+/* ---------- fatal ---------- */
 
-const saveSettings = () => void store.put('kv', settings, 'settings');
+function fatal(message: string) {
+  dom.fatal.hidden = false;
+  dom.fatalMsg.textContent = message;
+}
+
+dom.fatalReload.addEventListener('click', () => location.reload());
+
+window.addEventListener('error', (event) => fatal(event.message));
+window.addEventListener('unhandledrejection', (event) => fatal(String(event.reason)));
+
+function toast(message: string, bad = false) {
+  const node = document.createElement('div');
+  node.className = bad ? 'toast bad' : 'toast';
+  node.textContent = message;
+  dom.toasts.append(node);
+  setTimeout(() => node.remove(), 4000);
+}
+
+/* ---------- settings ---------- */
+
+function saveSettings() {
+  window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => void store.setKV('settings', settings), 250);
+}
 
 function applyTheme() {
-  document.documentElement.dataset.theme = settings.theme;
+  document.documentElement.dataset.theme = settings.theme === 'light' ? 'light' : 'dark';
 }
 
-/* ---------------- model status ---------------- */
+/* ---------- status ---------- */
 
-function setStatus(next: typeof state) {
+function setState(next: State) {
   state = next;
-  modelDot.className = `dot ${next === 'ready' ? 'ready' : next === 'busy' ? 'busy' : ''}`;
-  const model = MODELS.find((m) => m.id === settings.modelId);
-  modelName.textContent = next === 'ready' ? (model?.name ?? 'Model') : next === 'loading' ? 'Loading…' : next === 'busy' ? 'Thinking…' : 'No model';
-  sendBtn.disabled = next !== 'ready';
-  stopBtn.hidden = next !== 'busy';
-  sendBtn.hidden = next === 'busy';
+  dom.dot.className = `dot ${next === 'ready' ? 'ready' : next === 'busy' ? 'busy' : ''}`;
+  const current = MODELS.find((m) => m.id === settings.modelId);
+  dom.modelName.textContent =
+    next === 'ready' ? (current?.name ?? 'Model') : next === 'loading' ? 'Loading…' : next === 'busy' ? 'Thinking…' : 'No model';
+  dom.send.disabled = next !== 'ready';
+  dom.send.hidden = next === 'busy';
+  dom.stop.hidden = next !== 'busy';
 }
 
-async function ensurePort(): Promise<Port> {
-  if (port) return port;
-  port = await createPort();
-  port.setHandler(onEngine);
-  return port;
-}
-
-function onEngine(res: Res) {
-  switch (res.type) {
-    case 'ready':
-      setStatus('ready');
-      toast('Model ready');
-      break;
-    case 'progress':
-      setStatus('loading');
-      break;
-    case 'token':
-      pushToken(res.text);
-      break;
-    case 'done':
-      finishStream();
-      break;
-    case 'error':
-      toast(res.message.slice(0, 160), true);
-      if (state === 'loading') setStatus('idle');
-      break;
-  }
-}
-
-async function loadModel(modelId: string) {
-  const model = MODELS.find((m) => m.id === modelId);
-  if (!model) return;
-
-  settings.modelId = modelId;
-  void saveSettings();
-  setStatus('loading');
-
-  const gpu = await hasWebGPU();
-  const p = await ensurePort();
-  p.postMessage({
-    type: 'load',
-    modelId,
-    device: gpu ? 'webgpu' : 'wasm',
-    dtype: gpu ? model.dtype.webgpu : model.dtype.wasm,
-  });
-  if (!gpu) toast('No WebGPU — running on CPU, replies will be slow', true);
-}
-
-async function unloadModel() {
-  port?.terminate();
-  port = null;
-  setStatus('idle');
-  toast('Model unloaded, memory freed');
-}
-
-async function hasWebGPU() {
-  if (!('gpu' in navigator)) return false;
+async function webgpu(): Promise<boolean> {
+  const nav = navigator as any;
+  if (!nav.gpu) return false;
   try {
-    const adapter = await (navigator as unknown as { gpu: { requestAdapter(): Promise<unknown> } }).gpu.requestAdapter();
-    return Boolean(adapter);
+    return Boolean(await nav.gpu.requestAdapter());
   } catch {
     return false;
   }
 }
 
-/* ---------------- chats ---------------- */
+/* ---------- model ---------- */
+
+async function loadModel(modelId: string) {
+  const target = MODELS.find((m) => m.id === modelId);
+  if (!target) return;
+
+  settings.modelId = modelId;
+  saveSettings();
+  setState('loading');
+
+  const gpu = await webgpu();
+  dom.banner.hidden = false;
+  dom.banner.innerHTML = `<b>Downloading ${target.name}</b><span class="track"><i id="bar"></i></span><span id="pct">0%</span>`;
+
+  const bar = document.getElementById('bar');
+  const pct = document.getElementById('pct');
+
+  try {
+    const lib = await import('@huggingface/transformers');
+    lib.env.allowLocalModels = false;
+
+    model = await lib.pipeline('text-generation', target.id, {
+      device: gpu ? 'webgpu' : 'wasm',
+      dtype: (gpu ? target.gpu : target.cpu) as any,
+      progress_callback: (p: any) => {
+        if (p.status === 'progress' && p.total) {
+          const ratio = (p.loaded ?? 0) / p.total;
+          if (bar) bar.style.width = `${ratio * 100}%`;
+          if (pct) pct.textContent = `${Math.round(ratio * 100)}%`;
+        }
+      },
+    } as any);
+
+    dom.banner.hidden = true;
+    setState('ready');
+    toast(`${target.name} ready`);
+    if (!gpu) toast('No WebGPU — replies will be slow', true);
+  } catch (error) {
+    dom.banner.hidden = true;
+    setState('idle');
+    toast(error instanceof Error ? error.message.slice(0, 140) : 'Load failed', true);
+  }
+}
+
+async function unloadModel() {
+  try {
+    await model?.dispose?.();
+  } catch {
+    /* ignore */
+  }
+  model = null;
+  setState('idle');
+  toast('Model unloaded');
+}
+
+/* ---------- chats ---------- */
 
 function newChat(): Chat {
   const fresh: Chat = { id: crypto.randomUUID(), title: 'New chat', createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
   chats.unshift(fresh);
   chat = fresh;
-  void store.put('chats', fresh);
-  renderList();
-  renderChat();
-  inputEl.focus();
+  void store.putChat(fresh);
+  drawList();
+  drawChat();
+  dom.input.focus();
   return fresh;
 }
 
@@ -207,31 +261,29 @@ function openChat(id: string) {
   const found = chats.find((c) => c.id === id);
   if (!found) return;
   chat = found;
-  renderList();
-  renderChat();
-  sidebar.classList.remove('open');
+  drawList();
+  drawChat();
+  closeMenu();
 }
 
 function deleteChat(id: string) {
   chats = chats.filter((c) => c.id !== id);
-  void store.del('chats', id);
+  void store.dropChat(id);
   if (chat?.id === id) {
     if (chats.length) openChat(chats[0].id);
     else newChat();
-  } else {
-    renderList();
-  }
+  } else drawList();
 }
 
 function touch() {
   if (!chat) return;
   chat.updatedAt = Date.now();
-  void store.put('chats', chat);
+  void store.putChat(chat);
 }
 
-function renderList(filter = '') {
+function drawList(filter = '') {
   const q = filter.trim().toLowerCase();
-  listEl.replaceChildren();
+  dom.list.replaceChildren();
 
   const visible = q
     ? chats.filter((c) => c.title.toLowerCase().includes(q) || c.messages.some((m) => m.content.toLowerCase().includes(q)))
@@ -239,374 +291,388 @@ function renderList(filter = '') {
 
   for (const item of visible) {
     const row = document.createElement('button');
-    row.className = 'chat-item';
     row.type = 'button';
+    row.className = 'chat-row';
     row.setAttribute('aria-current', String(item.id === chat?.id));
 
     const label = document.createElement('span');
     label.textContent = item.title;
     row.append(label);
 
-    const del = document.createElement('span');
-    del.className = 'del';
-    del.innerHTML = '<svg><use href="#i-trash"/></svg>';
-    del.setAttribute('role', 'button');
-    del.setAttribute('aria-label', `Delete ${item.title}`);
-    del.addEventListener('click', (event) => {
+    const kill = document.createElement('button');
+    kill.type = 'button';
+    kill.className = 'kill';
+    kill.innerHTML = '<svg><use href="#i-trash"/></svg>';
+    kill.setAttribute('aria-label', `Delete ${item.title}`);
+    kill.addEventListener('click', (event) => {
       event.stopPropagation();
       deleteChat(item.id);
     });
-    row.append(del);
+    row.append(kill);
 
     row.addEventListener('click', () => openChat(item.id));
-    listEl.append(row);
+    dom.list.append(row);
   }
 }
 
-function renderChat() {
-  chatEl.replaceChildren();
-  titleEl.textContent = chat?.title ?? 'New chat';
+function drawChat() {
+  dom.chat.replaceChildren();
+  dom.title.textContent = chat?.title ?? 'New chat';
 
   if (!chat || chat.messages.length === 0) {
     const box = document.createElement('div');
     box.className = 'empty';
-    box.innerHTML =
-      '<h2>Nothing here yet</h2><p>Ask anything. The model runs locally, so there is no account, no quota and no logging.</p>';
-    chatEl.append(box);
+    box.innerHTML = '<h2>Nothing here yet</h2><p>Ask anything — the model runs locally, so there is no quota and no logging.</p>';
+    dom.chat.append(box);
   } else {
-    for (const msg of chat.messages) renderMessage(msg);
+    for (const message of chat.messages) drawMessage(message);
   }
-  updateCtx();
-  scrollBottom();
+
+  drawCtx();
+  scrollDown();
 }
 
-/* ---------------- message rendering ---------------- */
+/* ---------- messages ---------- */
 
-function bodyFor(text: string, asMarkdown: boolean): HTMLElement {
-  const body = document.createElement('div');
+function body(text: string, asMarkdown: boolean): HTMLElement {
+  const node = document.createElement('div');
   if (asMarkdown && settings.markdown) {
-    body.className = 'msg-body md';
-    body.innerHTML = renderMarkdown(text);
+    node.className = 'body md';
+    node.innerHTML = markdown(text);
   } else {
-    body.className = 'msg-body';
-    body.textContent = text;
+    node.className = 'body';
+    node.textContent = text;
   }
-  return body;
+  return node;
 }
 
-function renderMessage(msg: Msg): HTMLElement {
-  chatEl.querySelector('.empty')?.remove();
+function drawMessage(message: Msg): HTMLElement {
+  dom.chat.querySelector('.empty')?.remove();
 
   const wrap = document.createElement('article');
-  wrap.className = `msg ${msg.role}`;
+  wrap.className = `msg ${message.role}`;
 
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
-  bubble.append(bodyFor(msg.content, msg.role === 'assistant'));
+  bubble.append(body(message.content, message.role === 'assistant'));
   wrap.append(bubble);
 
-  const actions = document.createElement('div');
-  actions.className = 'msg-actions';
+  const acts = document.createElement('div');
+  acts.className = 'acts';
 
-  const mk = (icon: string, label: string, run: () => void) => {
+  const add = (icon: string, label: string, run: () => void) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.title = label;
     b.setAttribute('aria-label', label);
     b.innerHTML = `<svg><use href="#i-${icon}"/></svg>`;
     b.addEventListener('click', run);
-    actions.append(b);
+    acts.append(b);
   };
 
-  mk('copy', 'Copy', () => {
-    void navigator.clipboard.writeText(msg.content).then(() => toast('Copied'));
+  add('copy', 'Copy', () => {
+    void navigator.clipboard.writeText(message.content).then(() => toast('Copied'));
   });
 
-  if (msg.role === 'assistant') {
-    mk('redo', 'Regenerate', () => regenerate(msg));
-    if ('speechSynthesis' in window) {
-      mk('speak', 'Read aloud', () => {
-        speechSynthesis.cancel();
-        speechSynthesis.speak(new SpeechSynthesisUtterance(msg.content));
-      });
-    }
+  if (message.role === 'assistant') {
+    add('redo', 'Regenerate', () => regenerate(message));
+    add('speak', 'Read aloud', () => {
+      speechSynthesis.cancel();
+      speechSynthesis.speak(new SpeechSynthesisUtterance(message.content));
+    });
   } else {
-    mk('edit', 'Edit and resend', () => startEdit(wrap, msg));
+    add('edit', 'Edit and resend', () => editMessage(wrap, message));
   }
 
-  wrap.append(actions);
-  chatEl.append(wrap);
+  wrap.append(acts);
+  dom.chat.append(wrap);
   return wrap;
 }
 
-function startEdit(wrap: HTMLElement, msg: Msg) {
+function editMessage(wrap: HTMLElement, message: Msg) {
   if (!chat || state === 'busy') return;
 
   const box = document.createElement('div');
-  box.className = 'edit-box';
+  box.className = 'edit';
   const area = document.createElement('textarea');
-  area.value = msg.content;
-  area.rows = Math.min(14, msg.content.split('\n').length + 2);
+  area.value = message.content;
+  area.rows = Math.min(12, message.content.split('\n').length + 2);
 
-  const bar = document.createElement('div');
+  const row = document.createElement('div');
+  row.className = 'row';
+
   const cancel = document.createElement('button');
   cancel.type = 'button';
-  cancel.className = 'ghost';
+  cancel.className = 'btn-ghost';
   cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', () => renderChat());
-  const save = document.createElement('button');
-  save.type = 'button';
-  save.textContent = 'Resend';
-  save.addEventListener('click', () => {
+  cancel.addEventListener('click', drawChat);
+
+  const resend = document.createElement('button');
+  resend.type = 'button';
+  resend.className = 'btn-primary';
+  resend.textContent = 'Resend';
+  resend.addEventListener('click', () => {
     const next = area.value.trim();
-    if (!next) return;
-    const index = chat!.messages.indexOf(msg);
-    chat!.messages = chat!.messages.slice(0, index);
-    void store.put('chats', chat!);
-    renderChat();
+    if (!next || !chat) return;
+    const index = chat.messages.indexOf(message);
+    chat.messages = chat.messages.slice(0, index);
+    void store.putChat(chat);
+    drawChat();
     void submit(next);
   });
 
-  bar.append(cancel, save);
-  box.append(area, bar);
+  row.append(cancel, resend);
+  box.append(area, row);
   wrap.replaceChildren(box);
   area.focus();
 }
 
-function regenerate(msg: Msg) {
+function regenerate(message: Msg) {
   if (!chat || state !== 'ready') return;
-  const index = chat.messages.indexOf(msg);
+  const index = chat.messages.indexOf(message);
   if (index < 0) return;
   chat.messages = chat.messages.slice(0, index);
-  void store.put('chats', chat);
-  renderChat();
+  void store.putChat(chat);
+  drawChat();
   void run();
 }
 
-/* ---------------- context ---------------- */
+/* ---------- context ---------- */
 
-function contextMessages(): Msg[] {
+function contextSlice(): Msg[] {
   if (!chat) return [];
-  const turns = Math.max(0, settings.contextTurns);
-  const model = MODELS.find((m) => m.id === settings.modelId);
-  const budget = Math.floor((model?.ctx ?? 8000) * 0.7) * 3.6;
+  const limit = Math.max(0, settings.contextTurns);
+  if (limit === 0) return [];
 
-  let slice = turns === 0 ? [] : chat.messages.slice(-turns * 2);
+  const current = MODELS.find((m) => m.id === settings.modelId);
+  const budget = (current?.ctx ?? 8000) * 0.7 * 3.5;
+
+  let slice = chat.messages.slice(-limit * 2);
   while (slice.length > 1 && slice.reduce((n, m) => n + m.content.length, 0) > budget) slice = slice.slice(1);
   return slice;
 }
 
-function updateCtx() {
-  const model = MODELS.find((m) => m.id === settings.modelId);
-  if (!model || !chat) {
-    ctxEl.hidden = true;
+function drawCtx() {
+  const current = MODELS.find((m) => m.id === settings.modelId);
+  if (!current || !chat || chat.messages.length === 0) {
+    dom.ctx.hidden = true;
     return;
   }
-  const used = contextMessages().reduce((n, m) => n + m.content.length, 0) / 3.6 + settings.system.length / 3.6;
-  const max = model.ctx;
-  const ratio = Math.min(used / max, 1);
 
-  ctxEl.hidden = chat.messages.length === 0;
-  ctxFill.style.width = `${ratio * 100}%`;
-  ctxLabel.textContent = `${Math.round(used)} / ${max} tokens`;
-  ctxEl.className = `ctx${ratio > 0.9 ? ' full' : ratio > 0.75 ? ' hot' : ''}`;
+  const used = (contextSlice().reduce((n, m) => n + m.content.length, 0) + settings.system.length) / 3.5;
+  const ratio = Math.min(used / current.ctx, 1);
+
+  dom.ctx.hidden = false;
+  dom.ctxFill.style.width = `${ratio * 100}%`;
+  dom.ctxLabel.textContent = `${Math.round(used)} / ${current.ctx}`;
+  dom.ctx.className = ratio > 0.9 ? 'ctx over' : ratio > 0.75 ? 'ctx warn' : 'ctx';
 }
 
-/* ---------------- streaming ---------------- */
+/* ---------- streaming ---------- */
 
-let streamWrap: HTMLElement | null = null;
-let streamBody: HTMLElement | null = null;
-let streamText = '';
+let liveWrap: HTMLElement | null = null;
+let liveBody: HTMLElement | null = null;
+let liveText = '';
 let paintQueued = false;
+let lastPaint = 0;
 
-function pushToken(text: string) {
-  streamText += text;
-  if (paintQueued || !streamBody) return;
+function onToken(text: string) {
+  liveText += text;
+  if (paintQueued) return;
   paintQueued = true;
   requestAnimationFrame(() => {
     paintQueued = false;
-    if (!streamBody) return;
+    if (!liveBody) return;
+    const now = performance.now();
+    if (now - lastPaint < 80) return;
+    lastPaint = now;
+
     const stick = follow && settings.autoscroll;
-    if (settings.markdown) streamBody.innerHTML = renderMarkdown(streamText);
-    else streamBody.textContent = streamText;
-    if (stick) scrollBottom();
-    jumpBtn.hidden = true;
+    if (settings.markdown) liveBody.innerHTML = markdown(liveText);
+    else liveBody.textContent = liveText;
+    if (stick) scrollDown();
   });
 }
 
-function finishStream() {
-  if (!streamBody || !chat) return;
-  const final = streamText.trim();
-  streamWrap?.classList.remove('streaming');
+function endStream() {
+  if (!chat) return;
+
+  const final = liveText.trim();
+  liveWrap?.classList.remove('streaming');
 
   if (final) {
     chat.messages.push({ role: 'assistant', content: final, at: Date.now() });
     touch();
-    const index = chat.messages.length - 1;
-    streamWrap?.remove();
-    const fresh = renderMessage(chat.messages[index]);
-    void fresh;
+    liveWrap?.remove();
+    drawMessage(chat.messages[chat.messages.length - 1]);
   } else {
-    streamWrap?.remove();
+    liveWrap?.remove();
   }
 
-  streamWrap = null;
-  streamBody = null;
-  streamText = '';
-  setStatus('ready');
-  updateCtx();
-  scrollBottom();
-  inputEl.focus();
+  liveWrap = null;
+  liveBody = null;
+  liveText = '';
+  setState('ready');
+  drawCtx();
+  scrollDown();
+  dom.input.focus();
 }
 
-function scrollBottom() {
-  chatEl.scrollTop = chatEl.scrollHeight;
+function scrollDown() {
+  dom.chat.scrollTop = dom.chat.scrollHeight;
 }
 
-/* ---------------- generation ---------------- */
+/* ---------- generation ---------- */
 
 async function run() {
-  if (!chat || state !== 'ready') return;
+  if (!chat || !model || state !== 'ready') return;
 
-  const context = contextMessages().map(({ role, content }) => ({ role, content }));
+  const history = contextSlice().map((m) => ({ role: m.role, content: m.content }));
   const messages = settings.system.trim()
-    ? [{ role: 'system' as const, content: settings.system.trim() }, ...context]
-    : context;
+    ? [{ role: 'system', content: settings.system.trim() }, ...history]
+    : history;
+  if (!messages.length) return;
 
-  if (messages.length === 0) return;
-
-  setStatus('busy');
-  streamText = '';
-  streamWrap = document.createElement('article');
-  streamWrap.className = 'msg assistant streaming';
+  setState('busy');
+  liveText = '';
+  liveWrap = document.createElement('article');
+  liveWrap.className = 'msg assistant streaming';
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
-  streamBody = bodyFor('', settings.markdown);
-  bubble.append(streamBody);
-  streamWrap.append(bubble);
-  chatEl.append(streamWrap);
-  scrollBottom();
+  liveBody = body('', settings.markdown);
+  bubble.append(liveBody);
+  liveWrap.append(bubble);
+  dom.chat.append(liveWrap);
+  scrollDown();
 
-  const p = await ensurePort();
-  p.postMessage({
-    type: 'generate',
-    messages,
-    params: {
-      maxNewTokens: settings.maxTokens,
+  const stopper = { interrupted: false, _call: () => stopper.interrupted };
+  const stopHandler = () => {
+    stopper.interrupted = true;
+  };
+  dom.stop.onclick = stopHandler;
+
+  const lib = await import('@huggingface/transformers');
+
+  try {
+    await model(messages, {
+      max_new_tokens: settings.maxTokens,
       temperature: settings.temperature,
-      topP: settings.topP,
-      repetitionPenalty: settings.repetitionPenalty,
-    },
-  });
+      top_p: settings.topP,
+      repetition_penalty: settings.repetitionPenalty,
+      do_sample: settings.temperature > 0,
+      stopping_criteria: stopper,
+      streamer: new lib.TextStreamer(model.tokenizer, {
+        skip_prompt: true,
+        skip_special_tokens: true,
+        callback_function: onToken,
+      }),
+    } as any);
+  } catch (error) {
+    toast(error instanceof Error ? error.message.slice(0, 140) : 'Generation failed', true);
+  } finally {
+    if (liveBody) {
+      if (settings.markdown) liveBody.innerHTML = markdown(liveText);
+      else liveBody.textContent = liveText;
+    }
+    endStream();
+  }
 }
 
 async function submit(text: string) {
   if (!chat) newChat();
   if (!chat) return;
 
-  const body = attachments.length
-    ? `${text}\n\n${attachments.map((a) => `<file name="${a.name}">\n${a.text}\n</file>`).join('\n\n')}`
+  const payload = files.length
+    ? `${text}\n\n${files.map((f) => `<file name="${f.name}">\n${f.text}\n</file>`).join('\n\n')}`
     : text;
 
-  chat.messages.push({ role: 'user', content: body, at: Date.now() });
-  if (chat.title === 'New chat') chat.title = text.slice(0, 48) || 'New chat';
+  chat.messages.push({ role: 'user', content: payload, at: Date.now() });
+  if (chat.title === 'New chat') chat.title = text.slice(0, 46) || 'New chat';
   touch();
-  renderChat();
-  renderList();
+  drawChat();
+  drawList();
 
-  attachments = [];
-  renderAttachments();
+  files = [];
+  drawFiles();
   await run();
 }
 
-/* ---------------- composer ---------------- */
+/* ---------- composer ---------- */
 
-function autosize() {
-  inputEl.style.height = 'auto';
-  inputEl.style.height = `${Math.min(inputEl.scrollHeight, 220)}px`;
+function resize() {
+  dom.input.style.height = 'auto';
+  dom.input.style.height = `${Math.min(dom.input.scrollHeight, 200)}px`;
 }
 
-function renderAttachments() {
-  attachEl.replaceChildren();
-  attachEl.hidden = attachments.length === 0;
-  attachments.forEach((file, index) => {
+function drawFiles() {
+  dom.files.replaceChildren();
+  dom.files.hidden = files.length === 0;
+
+  files.forEach((file, index) => {
     const pill = document.createElement('span');
     pill.className = 'pill';
     pill.textContent = file.name;
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.innerHTML = '<svg><use href="#i-x"/></svg>';
-    remove.setAttribute('aria-label', `Remove ${file.name}`);
-    remove.addEventListener('click', () => {
-      attachments.splice(index, 1);
-      renderAttachments();
+
+    const kill = document.createElement('button');
+    kill.type = 'button';
+    kill.innerHTML = '<svg><use href="#i-x"/></svg>';
+    kill.setAttribute('aria-label', `Remove ${file.name}`);
+    kill.addEventListener('click', () => {
+      files.splice(index, 1);
+      drawFiles();
     });
-    pill.append(remove);
-    attachEl.append(pill);
+
+    pill.append(kill);
+    dom.files.append(pill);
   });
 }
 
-$<HTMLFormElement>('composer').addEventListener('submit', (event) => {
+el<HTMLFormElement>('composer').addEventListener('submit', (event) => {
   event.preventDefault();
-  const text = inputEl.value.trim();
+  const text = dom.input.value.trim();
   if (!text || state !== 'ready') return;
-  inputEl.value = '';
-  autosize();
+  dom.input.value = '';
+  resize();
   void submit(text);
 });
 
-inputEl.addEventListener('input', autosize);
-inputEl.addEventListener('keydown', (event) => {
+dom.input.addEventListener('input', resize);
+dom.input.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    $<HTMLFormElement>('composer').requestSubmit();
+    el<HTMLFormElement>('composer').requestSubmit();
   }
 });
 
-stopBtn.addEventListener('click', () => port?.postMessage({ type: 'stop' }));
+el<HTMLButtonElement>('attach-btn').addEventListener('click', () => el<HTMLInputElement>('file').click());
 
-$<HTMLButtonElement>('attach-btn').addEventListener('click', () => $<HTMLInputElement>('file').click());
-
-$<HTMLInputElement>('file').addEventListener('change', async (event) => {
-  const files = (event.target as HTMLInputElement).files;
-  if (!files) return;
-  for (const file of Array.from(files).slice(0, 4)) {
-    const text = await file.text();
-    attachments.push({ name: file.name, text: text.slice(0, 20000) });
+el<HTMLInputElement>('file').addEventListener('change', async (event) => {
+  const picked = (event.target as HTMLInputElement).files;
+  if (!picked) return;
+  for (const file of Array.from(picked).slice(0, 4)) {
+    files.push({ name: file.name, text: (await file.text()).slice(0, 20000) });
   }
-  renderAttachments();
+  drawFiles();
   (event.target as HTMLInputElement).value = '';
 });
 
-const micBtn = $<HTMLButtonElement>('mic-btn');
-const Recognition =
-  (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition ??
-  (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike }).webkitSpeechRecognition;
+const micBtn = el<HTMLButtonElement>('mic-btn');
+const Speech = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+let listening: any = null;
 
-type SpeechRecognitionLike = {
-  lang: string;
-  interimResults: boolean;
-  continuous: boolean;
-  start(): void;
-  stop(): void;
-  onresult: ((event: { results: { 0: { 0: { transcript: string } } } }) => void) | null;
-  onend: (() => void) | null;
-};
-
-if (Recognition) {
+if (Speech) {
   micBtn.hidden = false;
   micBtn.addEventListener('click', () => {
     if (listening) {
       listening.stop();
       return;
     }
-    const rec = new Recognition();
+    const rec = new Speech();
     rec.lang = navigator.language;
     rec.interimResults = true;
-    rec.continuous = false;
-    rec.onresult = (event) => {
-      inputEl.value = event.results[0][0].transcript;
-      autosize();
+    rec.onresult = (event: any) => {
+      dom.input.value = event.results[0][0].transcript;
+      resize();
     };
     rec.onend = () => {
       listening = null;
@@ -618,35 +684,45 @@ if (Recognition) {
   });
 }
 
-/* ---------------- chat actions ---------------- */
+/* ---------- navigation ---------- */
 
-$<HTMLButtonElement>('new-chat').addEventListener('click', () => newChat());
-$<HTMLButtonElement>('open-sidebar').addEventListener('click', () => sidebar.classList.add('open'));
-$<HTMLButtonElement>('close-sidebar').addEventListener('click', () => sidebar.classList.remove('open'));
+function openMenu() {
+  dom.sidebar.classList.add('open');
+  dom.overlay.hidden = false;
+}
 
-$<HTMLInputElement>('search').addEventListener('input', (event) => renderList((event.target as HTMLInputElement).value));
+function closeMenu() {
+  dom.sidebar.classList.remove('open');
+  dom.overlay.hidden = true;
+}
 
-titleEl.addEventListener('click', () => {
+el<HTMLButtonElement>('new-chat').addEventListener('click', () => newChat());
+el<HTMLButtonElement>('open-sidebar').addEventListener('click', openMenu);
+el<HTMLButtonElement>('close-sidebar').addEventListener('click', closeMenu);
+dom.overlay.addEventListener('click', closeMenu);
+
+dom.search.addEventListener('input', () => drawList(dom.search.value));
+
+dom.title.addEventListener('click', () => {
   if (!chat) return;
   const next = prompt('Chat title', chat.title);
-  if (next?.trim()) {
-    chat.title = next.trim();
-    touch();
-    renderList();
-    titleEl.textContent = chat.title;
-  }
+  if (!next || !next.trim()) return;
+  chat.title = next.trim();
+  touch();
+  drawList();
+  dom.title.textContent = chat.title;
 });
 
-$<HTMLButtonElement>('export-btn').addEventListener('click', () => {
+el<HTMLButtonElement>('export-btn').addEventListener('click', () => {
   if (!chat || chat.messages.length === 0) return toast('Nothing to export');
-  const md = [`# ${chat.title}`, '']
+  const text = [`# ${chat.title}`, '']
     .concat(chat.messages.map((m) => `**${m.role === 'user' ? 'You' : 'Model'}**\n\n${m.content}\n`))
     .join('\n');
-  download(`${chat.title.replace(/\W+/g, '-').slice(0, 40)}.md`, md, 'text/markdown');
+  download(`${chat.title.replace(/\W+/g, '-').slice(0, 40) || 'chat'}.md`, text, 'text/markdown');
 });
 
-function download(name: string, data: string, type: string) {
-  const url = URL.createObjectURL(new Blob([data], { type }));
+function download(name: string, text: string, type: string) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
   const a = document.createElement('a');
   a.href = url;
   a.download = name;
@@ -654,45 +730,82 @@ function download(name: string, data: string, type: string) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-chatEl.addEventListener('scroll', () => {
-  follow = chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 90;
-  jumpBtn.hidden = follow;
+dom.chat.addEventListener('scroll', () => {
+  follow = dom.chat.scrollHeight - dom.chat.scrollTop - dom.chat.clientHeight < 90;
+  dom.jump.hidden = follow;
 });
 
-jumpBtn.addEventListener('click', () => {
+dom.jump.addEventListener('click', () => {
   follow = true;
-  scrollBottom();
+  scrollDown();
 });
 
-chatEl.addEventListener('click', (event) => {
+dom.chat.addEventListener('click', (event) => {
   const pre = (event.target as HTMLElement).closest('pre');
   if (!pre) return;
-  const code = pre.querySelector('code')?.textContent ?? '';
-  void navigator.clipboard.writeText(code).then(() => toast('Code copied'));
+  void navigator.clipboard.writeText(pre.textContent ?? '').then(() => toast('Code copied'));
 });
 
-/* ---------------- settings dialog ---------------- */
+/* ---------- settings sheet ---------- */
 
-const settingsSheet = $<HTMLDialogElement>('settings');
-
-function bindRange(id: string, outId: string, key: keyof Settings, digits = 2) {
-  const input = $<HTMLInputElement>(id);
-  const out = $<HTMLOutputElement>(outId);
-  const sync = () => {
-    (settings[key] as number) = Number(input.value);
-    out.textContent = digits ? Number(input.value).toFixed(digits) : input.value;
-    void saveSettings();
+function wireRange(input: HTMLInputElement, out: HTMLOutputElement, digits: number, get: () => number, set: (v: number) => void) {
+  const paint = () => {
+    out.textContent = digits ? get().toFixed(digits) : String(get());
   };
-  input.value = String(settings[key]);
-  out.textContent = digits ? Number(input.value).toFixed(digits) : String(input.value);
-  input.addEventListener('input', sync);
+  input.value = String(get());
+  paint();
+  input.addEventListener('input', () => {
+    set(Number(input.value));
+    paint();
+    saveSettings();
+    drawCtx();
+  });
 }
 
-const systemArea = $<HTMLTextAreaElement>('system');
-const presetHost = $<HTMLDivElement>('presets');
+const tempIn = el<HTMLInputElement>('temp');
+const tempOut = el<HTMLOutputElement>('temp-out');
+const toppIn = el<HTMLInputElement>('topp');
+const toppOut = el<HTMLOutputElement>('topp-out');
+const maxIn = el<HTMLInputElement>('max');
+const maxOut = el<HTMLOutputElement>('max-out');
+const repIn = el<HTMLInputElement>('rep');
+const repOut = el<HTMLOutputElement>('rep-out');
+const turnsIn = el<HTMLInputElement>('turns');
+const turnsOut = el<HTMLOutputElement>('turns-out');
+const mdCheck = el<HTMLInputElement>('markdown');
+const autoCheck = el<HTMLInputElement>('autoscroll');
 
-function buildPresets() {
-  presetHost.replaceChildren();
+function wireSettings() {
+  wireRange(tempIn, tempOut, 2, () => settings.temperature, (v) => { settings.temperature = v; });
+  wireRange(toppIn, toppOut, 2, () => settings.topP, (v) => { settings.topP = v; });
+  wireRange(maxIn, maxOut, 0, () => settings.maxTokens, (v) => { settings.maxTokens = v; });
+  wireRange(repIn, repOut, 2, () => settings.repetitionPenalty, (v) => { settings.repetitionPenalty = v; });
+  wireRange(turnsIn, turnsOut, 0, () => settings.contextTurns, (v) => { settings.contextTurns = v; });
+
+  dom.system.value = settings.system;
+  dom.system.addEventListener('input', () => {
+    settings.system = dom.system.value;
+    saveSettings();
+    drawPresets();
+    drawCtx();
+  });
+
+  mdCheck.checked = settings.markdown;
+  mdCheck.addEventListener('change', () => {
+    settings.markdown = mdCheck.checked;
+    saveSettings();
+    drawChat();
+  });
+
+  autoCheck.checked = settings.autoscroll;
+  autoCheck.addEventListener('change', () => {
+    settings.autoscroll = autoCheck.checked;
+    saveSettings();
+  });
+}
+
+function drawPresets() {
+  dom.presets.replaceChildren();
   for (const preset of PRESETS) {
     const b = document.createElement('button');
     b.type = 'button';
@@ -700,233 +813,231 @@ function buildPresets() {
     b.setAttribute('aria-pressed', String(settings.system === preset.prompt));
     b.addEventListener('click', () => {
       settings.system = preset.prompt;
-      systemArea.value = preset.prompt;
-      buildPresets();
-      void saveSettings();
-      updateCtx();
+      dom.system.value = preset.prompt;
+      saveSettings();
+      drawPresets();
+      drawCtx();
     });
-    presetHost.append(b);
+    dom.presets.append(b);
   }
 }
 
-bindRange('temp', 'temp-out', 'temperature');
-bindRange('topp', 'topp-out', 'topP');
-bindRange('max', 'max-out', 'maxTokens', 0);
-bindRange('rep', 'rep-out', 'repetitionPenalty');
-bindRange('turns', 'turns-out', 'contextTurns', 0);
+el<HTMLButtonElement>('settings-btn').addEventListener('click', () => sheets.settings.showModal());
 
-systemArea.addEventListener('input', () => {
-  settings.system = systemArea.value;
-  buildPresets();
-  void saveSettings();
-  updateCtx();
-});
-
-$<HTMLInputElement>('markdown').addEventListener('change', (e) => {
-  settings.markdown = (e.target as HTMLInputElement).checked;
-  void saveSettings();
-  renderChat();
-});
-
-$<HTMLInputElement>('autoscroll').addEventListener('change', (e) => {
-  settings.autoscroll = (e.target as HTMLInputElement).checked;
-  void saveSettings();
-});
-
-$<HTMLButtonElement>('settings-btn').addEventListener('click', () => {
-  settingsSheet.showModal();
-});
-
-$<HTMLButtonElement>('reset').addEventListener('click', () => {
-  settings = { ...DEFAULTS, modelId: settings.modelId };
-  void saveSettings();
-  hydrateSettings();
+el<HTMLButtonElement>('reset').addEventListener('click', () => {
+  const modelId = settings.modelId;
+  settings = { ...DEFAULTS, modelId };
+  saveSettings();
+  dom.system.value = settings.system;
+  drawPresets();
+  tempIn.value = String(settings.temperature);
+  toppIn.value = String(settings.topP);
+  maxIn.value = String(settings.maxTokens);
+  repIn.value = String(settings.repetitionPenalty);
+  turnsIn.value = String(settings.contextTurns);
+  tempOut.textContent = settings.temperature.toFixed(2);
+  toppOut.textContent = settings.topP.toFixed(2);
+  maxOut.textContent = String(settings.maxTokens);
+  repOut.textContent = settings.repetitionPenalty.toFixed(2);
+  turnsOut.textContent = String(settings.contextTurns);
+  mdCheck.checked = settings.markdown;
+  autoCheck.checked = settings.autoscroll;
+  applyTheme();
   toast('Settings reset');
 });
 
-function hydrateSettings() {
-  applyTheme();
-  systemArea.value = settings.system;
-  buildPresets();
-  for (const [id, key, digits] of [
-    ['temp', 'temperature', 2],
-    ['topp', 'topP', 2],
-    ['max', 'maxTokens', 0],
-    ['rep', 'repetitionPenalty', 2],
-    ['turns', 'contextTurns', 0],
-  ] as const) {
-    $<HTMLInputElement>(id).value = String(settings[key]);
-    $(`${id}-out`).textContent = digits ? Number(settings[key]).toFixed(digits) : String(settings[key]);
-  }
-  $<HTMLInputElement>('markdown').checked = settings.markdown;
-  $<HTMLInputElement>('autoscroll').checked = settings.autoscroll;
-}
-
-$<HTMLButtonElement>('export-all').addEventListener('click', () => {
-  download('local-chat-archive.json', JSON.stringify({ version: 1, chats }, null, 2), 'application/json');
+el<HTMLButtonElement>('export-all').addEventListener('click', () => {
+  download('local-chat.json', JSON.stringify({ version: 1, chats }, null, 2), 'application/json');
 });
 
-$<HTMLButtonElement>('import-btn').addEventListener('click', () => $<HTMLInputElement>('import-file').click());
+el<HTMLButtonElement>('import-btn').addEventListener('click', () => el<HTMLInputElement>('import-file').click());
 
-$<HTMLInputElement>('import-file').addEventListener('change', async (event) => {
-  const file = (event.target as HTMLInputElement).files?.[0];
-  if (!file) return;
+el<HTMLInputElement>('import-file').addEventListener('change', async (event) => {
+  const picked = (event.target as HTMLInputElement).files?.[0];
+  if (!picked) return;
   try {
-    const parsed = JSON.parse(await file.text()) as { chats?: Chat[] };
+    const parsed = JSON.parse(await picked.text()) as { chats?: Chat[] };
     const incoming = (parsed.chats ?? []).map((c) => ({ ...c, id: crypto.randomUUID() }));
     chats = [...incoming, ...chats];
-    for (const c of incoming) void store.put('chats', c);
-    renderList();
-    toast(`Imported ${incoming.length} chat${incoming.length === 1 ? '' : 's'}`);
+    for (const c of incoming) void store.putChat(c);
+    drawList();
+    toast(`Imported ${incoming.length}`);
   } catch {
-    toast('Could not read that file', true);
+    toast('Bad file', true);
   }
 });
 
-$<HTMLButtonElement>('wipe').addEventListener('click', async () => {
-  if (!confirm('Delete every chat and setting on this device?')) return;
-  await store.clearStore('chats');
-  await store.clearStore('kv');
+el<HTMLButtonElement>('wipe').addEventListener('click', async () => {
+  if (!confirm('Delete every chat and setting?')) return;
+  await store.clearChats();
+  await store.clearKV();
   chats = [];
   settings = { ...DEFAULTS };
   newChat();
-  hydrateSettings();
-  toast('Everything deleted');
+  dom.system.value = settings.system;
+  applyTheme();
+  toast('Deleted');
 });
 
-/* ---------------- model library ---------------- */
+/* ---------- models sheet ---------- */
 
-const modelSheet = $<HTMLDialogElement>('models');
-const modelList = $<HTMLDivElement>('model-list');
+async function drawModels() {
+  dom.modelList.replaceChildren();
+  const gpu = await webgpu();
+  dom.gpuHint.textContent = gpu ? 'WebGPU found — models run on your GPU.' : 'No WebGPU — CPU only, pick a small model.';
 
-async function renderModels() {
-  modelList.replaceChildren();
-  const gpu = await hasWebGPU();
-  $<HTMLParagraphElement>('gpu-hint').textContent = gpu
-    ? 'WebGPU detected — models run on your GPU.'
-    : 'No WebGPU. Everything runs on CPU: pick a small model.';
-
-  let cacheKeys: string[] = [];
+  let cached: string[] = [];
   try {
     const cache = await caches.open('transformers-cache');
-    cacheKeys = (await cache.keys()).map((r) => r.url);
+    cached = (await cache.keys()).map((r) => r.url);
   } catch {
-    cacheKeys = [];
+    cached = [];
   }
 
-  for (const model of MODELS) {
+  for (const m of MODELS) {
     const card = document.createElement('div');
-    card.className = `model-card${model.id === settings.modelId ? ' active' : ''}`;
+    card.className = m.id === settings.modelId ? 'model-card active' : 'model-card';
 
     const top = document.createElement('div');
     top.className = 'top';
     const name = document.createElement('strong');
-    name.textContent = model.name;
+    name.textContent = m.name;
     top.append(name);
-    if (model.badge) {
+    if (m.badge) {
       const badge = document.createElement('span');
       badge.className = 'badge';
-      badge.textContent = model.badge;
+      badge.textContent = m.badge;
       top.append(badge);
     }
     card.append(top);
 
     const meta = document.createElement('p');
-    meta.textContent = `${model.params} params · ${model.size} download · ${model.note}`;
+    meta.textContent = `${m.size} · ${m.note}`;
     card.append(meta);
 
-    const actions = document.createElement('div');
-    actions.className = 'actions';
+    const row = document.createElement('div');
+    row.className = 'acts-row';
 
     const use = document.createElement('button');
     use.type = 'button';
-    use.className = 'ghost';
-    use.textContent = model.id === settings.modelId && state === 'ready' ? 'Loaded' : 'Load';
-    use.disabled = model.id === settings.modelId && (state === 'ready' || state === 'loading');
-    use.addEventListener('click', async () => {
-      await loadModel(model.id);
-      modelSheet.close();
-      await renderModels();
+    use.className = 'btn-ghost';
+    use.textContent = m.id === settings.modelId && state === 'ready' ? 'Loaded' : 'Load';
+    use.disabled = m.id === settings.modelId && (state === 'ready' || state === 'loading');
+    use.addEventListener('click', () => {
+      sheets.models.close();
+      void loadModel(m.id);
     });
-    actions.append(use);
+    row.append(use);
 
-    if (model.id === settings.modelId && state === 'ready') {
-      const unload = document.createElement('button');
-      unload.type = 'button';
-      unload.className = 'ghost';
-      unload.textContent = 'Unload';
-      unload.addEventListener('click', async () => {
+    if (m.id === settings.modelId && state === 'ready') {
+      const off = document.createElement('button');
+      off.type = 'button';
+      off.className = 'btn-ghost';
+      off.textContent = 'Unload';
+      off.addEventListener('click', async () => {
         await unloadModel();
-        await renderModels();
+        void drawModels();
       });
-      actions.append(unload);
+      row.append(off);
     }
 
-    const cached = cacheKeys.some((url) => url.includes(model.id));
-    if (cached) {
+    if (cached.some((url) => url.includes(m.id))) {
       const tag = document.createElement('span');
       tag.className = 'cached';
       tag.textContent = 'cached';
-      actions.append(tag);
+      row.append(tag);
 
       const purge = document.createElement('button');
       purge.type = 'button';
-      purge.className = 'ghost danger';
+      purge.className = 'btn-ghost danger';
       purge.textContent = 'Remove';
       purge.addEventListener('click', async () => {
-        try {
-          const cache = await caches.open('transformers-cache');
-          for (const req of await cache.keys()) {
-            if (req.url.includes(model.id)) await cache.delete(req);
-          }
-          toast('Removed from cache');
-          await renderModels();
-        } catch {
-          toast('Could not clear the cache', true);
+        const cache = await caches.open('transformers-cache');
+        for (const req of await cache.keys()) {
+          if (req.url.includes(m.id)) await cache.delete(req);
         }
+        toast('Removed');
+        void drawModels();
       });
-      actions.append(purge);
+      row.append(purge);
     }
 
-    card.append(actions);
-    modelList.append(card);
+    card.append(row);
+    dom.modelList.append(card);
   }
 }
 
-modelChip.addEventListener('click', async () => {
-  await renderModels();
-  modelSheet.showModal();
+el<HTMLButtonElement>('models-btn').addEventListener('click', async () => {
+  await drawModels();
+  sheets.models.showModal();
 });
 
-/* ---------------- command palette ---------------- */
+el<HTMLButtonElement>('model-chip').addEventListener('click', async () => {
+  await drawModels();
+  sheets.models.showModal();
+});
 
-const palette = $<HTMLDialogElement>('palette');
-const paletteInput = $<HTMLInputElement>('palette-input');
-const paletteList = $<HTMLUListElement>('palette-list');
+/* ---------- diagnostics ---------- */
+
+async function drawDiag() {
+  const lines: string[] = [];
+  lines.push(`secure context: ${window.isSecureContext}`);
+  lines.push(`webgpu: ${(await webgpu()) ? 'adapter found' : 'none'}`);
+  lines.push(`state: ${state}`);
+  lines.push(`model: ${settings.modelId}`);
+
+  try {
+    const est = await navigator.storage?.estimate?.();
+    if (est) lines.push(`storage: ${Math.round((est.usage ?? 0) / 1e6)} MB used of ${Math.round((est.quota ?? 0) / 1e6)} MB`);
+  } catch {
+    lines.push('storage: unavailable');
+  }
+
+  try {
+    const cache = await caches.open('transformers-cache');
+    lines.push(`cached requests: ${(await cache.keys()).length}`);
+  } catch {
+    lines.push('cached requests: unavailable');
+  }
+
+  lines.push(`chats: ${chats.length}`);
+  lines.push(`ua: ${navigator.userAgent}`);
+
+  dom.diagBody.textContent = lines.join('\n');
+}
+
+el<HTMLButtonElement>('diag-btn').addEventListener('click', async () => {
+  await drawDiag();
+  sheets.diag.showModal();
+});
+
+el<HTMLButtonElement>('diag-copy').addEventListener('click', () => {
+  void navigator.clipboard.writeText(dom.diagBody.textContent ?? '').then(() => toast('Copied'));
+});
+
+el<HTMLButtonElement>('diag-clear').addEventListener('click', async () => {
+  const cache = await caches.open('transformers-cache');
+  for (const req of await cache.keys()) await cache.delete(req);
+  toast('Cache cleared — reload before loading a model');
+  void drawDiag();
+});
+
+/* ---------- palette ---------- */
 
 type Command = { label: string; keys?: string; run: () => void };
 
 const COMMANDS: Command[] = [
   { label: 'New chat', keys: 'Ctrl Shift O', run: () => newChat() },
-  { label: 'Model library', run: () => void modelChip.click() },
-  { label: 'Settings', run: () => settingsSheet.showModal() },
-  { label: 'Export chat', run: () => void $<HTMLButtonElement>('export-btn').click() },
-  { label: 'Toggle theme', run: () => cycleTheme() },
+  { label: 'Models', run: () => void el<HTMLButtonElement>('models-btn').click() },
+  { label: 'Settings', run: () => sheets.settings.showModal() },
+  { label: 'Diagnostics', run: () => void el<HTMLButtonElement>('diag-btn').click() },
+  { label: 'Export chat', run: () => void el<HTMLButtonElement>('export-btn').click() },
   { label: 'Unload model', run: () => void unloadModel() },
-  { label: 'Delete this chat', run: () => chat && deleteChat(chat.id) },
 ];
 
-function openPalette() {
-  paletteInput.value = '';
-  drawPalette('');
-  palette.showModal();
-  paletteInput.focus();
-}
-
 function drawPalette(query: string) {
-  paletteList.replaceChildren();
-  const q = query.toLowerCase();
-  const hits = COMMANDS.filter((c) => c.label.toLowerCase().includes(q));
+  dom.paletteList.replaceChildren();
+  const hits = COMMANDS.filter((c) => c.label.toLowerCase().includes(query.toLowerCase()));
   hits.forEach((cmd, index) => {
     const li = document.createElement('li');
     li.setAttribute('role', 'option');
@@ -938,97 +1049,90 @@ function drawPalette(query: string) {
       li.append(kbd);
     }
     li.addEventListener('click', () => {
-      palette.close();
+      sheets.palette.close();
       cmd.run();
     });
-    paletteList.append(li);
+    dom.paletteList.append(li);
   });
 }
 
-paletteInput.addEventListener('input', () => drawPalette(paletteInput.value));
-paletteInput.addEventListener('keydown', (event) => {
+dom.paletteInput.addEventListener('input', () => drawPalette(dom.paletteInput.value));
+dom.paletteInput.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter') return;
-  const first = paletteList.querySelector('li');
-  if (first) {
-    palette.close();
-    (first as HTMLElement).click();
-  }
+  (dom.paletteList.querySelector('li') as HTMLElement | null)?.click();
+  sheets.palette.close();
 });
 
-/* ---------------- theme ---------------- */
+/* ---------- theme + keys ---------- */
 
-const THEMES = ['auto', 'dark', 'light'] as const;
+const THEMES = ['dark', 'light'];
 
-function cycleTheme() {
-  const next = THEMES[(THEMES.indexOf(settings.theme) + 1) % THEMES.length];
-  settings.theme = next;
+el<HTMLButtonElement>('theme-btn').addEventListener('click', () => {
+  settings.theme = THEMES[(THEMES.indexOf(settings.theme) + 1) % THEMES.length];
   applyTheme();
-  void saveSettings();
-  toast(`Theme: ${next}`);
-}
-
-$<HTMLButtonElement>('theme-btn').addEventListener('click', cycleTheme);
-
-/* ---------------- keyboard ---------------- */
+  saveSettings();
+});
 
 window.addEventListener('keydown', (event) => {
   const mod = event.ctrlKey || event.metaKey;
 
   if (mod && event.key.toLowerCase() === 'k') {
     event.preventDefault();
-    openPalette();
+    dom.paletteInput.value = '';
+    drawPalette('');
+    sheets.palette.showModal();
+    dom.paletteInput.focus();
   }
   if (mod && event.shiftKey && event.key.toLowerCase() === 'o') {
     event.preventDefault();
     newChat();
   }
-  if (mod && event.key === '/') {
-    event.preventDefault();
-    settingsSheet.showModal();
-  }
-  if (event.key === 'Escape') sidebar.classList.remove('open');
+  if (event.key === 'Escape') closeMenu();
 });
 
 document.addEventListener('click', (event) => {
-  const el = event.target as HTMLElement;
-  if (el.closest('[data-close]')) el.closest('dialog')?.close();
+  const node = event.target as HTMLElement;
+  if (node.closest('[data-close]')) node.closest('dialog')?.close();
 });
 
-/* ---------------- boot ---------------- */
+/* ---------- boot ---------- */
 
 async function boot() {
-  const saved = await store.get<Settings>('kv', 'settings');
+  if (!window.isSecureContext) fatal('Needs HTTPS or localhost.');
+
+  const saved = (await store.getKV('settings')) as Settings | undefined;
   if (saved) settings = { ...DEFAULTS, ...saved };
 
-  hydrateSettings();
   applyTheme();
-  setStatus('idle');
+  wireSettings();
+  drawPresets();
+  setState('idle');
 
-  chats = (await store.all<Chat>('chats')).sort((a, b) => b.updatedAt - a.updatedAt);
-  if (chats.length === 0) newChat();
-  else {
+  chats = ((await store.getChats()) as Chat[]).sort((a, b) => b.updatedAt - a.updatedAt);
+  if (chats.length) {
     chat = chats[0];
-    renderList();
-    renderChat();
+    drawList();
+    drawChat();
+  } else {
+    newChat();
   }
 
-  const onboarding = $<HTMLDialogElement>('onboarding');
-  if (!(await store.get('kv', 'onboarded'))) {
-    onboarding.showModal();
-    $<HTMLButtonElement>('onb-load').addEventListener('click', async () => {
-      onboarding.close();
-      void store.put('kv', true, 'onboarded');
-      await loadModel(settings.modelId);
+  const gpu = await webgpu();
+  if (!gpu) {
+    dom.banner.hidden = false;
+    dom.banner.innerHTML = '<b>No WebGPU detected.</b> You can still load a small model on CPU — it will be slow.';
+  }
+
+  if (!(await store.getKV('onboarded'))) {
+    sheets.onboarding.showModal();
+    el<HTMLButtonElement>('onb-load').addEventListener('click', () => {
+      sheets.onboarding.close();
+      void store.setKV('onboarded', true);
+      void loadModel(settings.modelId);
     });
   }
 
-  if (navigator.storage?.persist) void navigator.storage.persist();
-
-  if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register(new URL('../sw.js', import.meta.url)).catch(() => {});
-  }
-
-  inputEl.focus();
+  dom.input.focus();
 }
 
-void boot();
+boot().catch((error: unknown) => fatal(error instanceof Error ? error.message : String(error)));
