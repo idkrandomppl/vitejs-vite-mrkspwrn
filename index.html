@@ -1,25 +1,26 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="auto">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Local Chat</title>
-    <meta
-      name="description"
-      content="A private chat client that runs an uncensored language model entirely on your device."
-    />
+    <meta name="description" content="Private chat with a language model running on your own device." />
     <meta name="color-scheme" content="dark light" />
-    <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://huggingface.co" />
-    <link rel="preconnect" href="https://cdn-lfs.huggingface.co" crossorigin />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
+    <div id="fatal" class="fatal" hidden>
+      <strong>Something broke.</strong>
+      <span id="fatal-msg"></span>
+      <button type="button" id="fatal-reload">Reload</button>
+    </div>
+
     <svg class="sprite" aria-hidden="true">
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
       <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
-      <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 8 6 8z" /></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l15-7-5 7 5 7z" /></symbol>
       <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" /></symbol>
       <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h9" /></symbol>
       <symbol id="i-redo" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 1 3 6.2M4 12V6m0 6h6" /></symbol>
@@ -34,190 +35,155 @@
       <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19" /></symbol>
       <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></symbol>
       <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5" /></symbol>
+      <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3l9 16H3z" /><path d="M12 9v5M12 17v.5" /></symbol>
     </svg>
 
-    <div class="shell" id="shell">
-      <aside class="sidebar" id="sidebar" aria-label="Chats">
-        <div class="side-top">
-          <button class="icon-btn lg" id="new-chat" title="New chat (Ctrl+Shift+O)" aria-label="New chat">
+    <div class="shell">
+      <div class="overlay" id="overlay" hidden></div>
+
+      <aside class="sidebar" id="sidebar">
+        <div class="side-head">
+          <button class="btn-icon accent" id="new-chat" title="New chat" aria-label="New chat">
             <svg><use href="#i-plus" /></svg>
           </button>
-          <div class="side-title">Local Chat</div>
-          <button class="icon-btn only-mobile" id="close-sidebar" aria-label="Close sidebar">
+          <span class="brand">Local Chat</span>
+          <button class="btn-icon mobile-only" id="close-sidebar" aria-label="Close menu">
             <svg><use href="#i-x" /></svg>
           </button>
         </div>
 
-        <label class="search">
+        <div class="search">
           <svg><use href="#i-search" /></svg>
-          <input id="search" type="search" placeholder="Search chats" aria-label="Search chats" />
-        </label>
+          <input id="search" type="search" placeholder="Search" aria-label="Search chats" />
+        </div>
 
-        <nav class="chat-list" id="chat-list" aria-label="Saved chats"></nav>
+        <nav class="chat-list" id="chat-list" aria-label="Chats"></nav>
 
         <div class="side-foot">
-          <button class="icon-btn" id="theme-btn" title="Theme" aria-label="Cycle theme">
-            <svg><use href="#i-sun" /></svg>
-          </button>
-          <button class="icon-btn" id="models-btn" title="Model library" aria-label="Model library">
-            <svg><use href="#i-chip" /></svg>
-          </button>
-          <button class="icon-btn" id="settings-btn" title="Settings" aria-label="Settings">
-            <svg><use href="#i-cog" /></svg>
-          </button>
-          <span class="side-note">Runs on your device</span>
+          <button class="btn-icon" id="theme-btn" title="Theme" aria-label="Change theme"><svg><use href="#i-sun" /></svg></button>
+          <button class="btn-icon" id="models-btn" title="Models" aria-label="Models"><svg><use href="#i-chip" /></svg></button>
+          <button class="btn-icon" id="settings-btn" title="Settings" aria-label="Settings"><svg><use href="#i-cog" /></svg></button>
+          <button class="btn-icon" id="diag-btn" title="Diagnostics" aria-label="Diagnostics"><svg><use href="#i-warn" /></svg></button>
         </div>
       </aside>
 
       <div class="main">
         <header class="topbar">
-          <button class="icon-btn only-mobile" id="open-sidebar" aria-label="Open sidebar">
-            <svg><use href="#i-menu" /></svg>
-          </button>
-          <h1 class="chat-title" id="chat-title" tabindex="0" role="button" title="Rename">New chat</h1>
-          <div class="spacer"></div>
-          <button class="model-chip" id="model-chip" aria-haspopup="dialog">
-            <span class="dot" id="model-dot"></span>
-            <span id="model-name">No model</span>
-          </button>
-          <button class="icon-btn" id="export-btn" title="Export chat" aria-label="Export chat">
-            <svg><use href="#i-down" /></svg>
-          </button>
+          <button class="btn-icon mobile-only" id="open-sidebar" aria-label="Open menu"><svg><use href="#i-menu" /></svg></button>
+          <h1 id="chat-title" class="title" tabindex="0" role="button" title="Rename chat">New chat</h1>
+          <span class="grow"></span>
+          <button class="chip" id="model-chip"><span class="dot" id="model-dot"></span><span id="model-name">No model</span></button>
+          <button class="btn-icon" id="export-btn" title="Export" aria-label="Export chat"><svg><use href="#i-down" /></svg></button>
         </header>
 
-        <div class="chat-wrap">
+        <div id="banner" class="banner" hidden></div>
+
+        <div class="scroll">
           <main class="chat" id="chat" role="log" aria-live="polite" aria-label="Conversation"></main>
-          <button class="jump" id="jump" hidden aria-label="Scroll to latest">
-            <svg><use href="#i-down" /></svg>
-          </button>
+          <button class="jump" id="jump" hidden aria-label="Scroll to latest"><svg><use href="#i-down" /></svg></button>
         </div>
 
-        <div class="composer-wrap">
+        <div class="dock">
           <div class="ctx" id="ctx" hidden>
-            <div class="ctx-bar"><div id="ctx-fill"></div></div>
+            <div class="ctx-track"><div id="ctx-fill"></div></div>
             <span id="ctx-label">0 / 0</span>
           </div>
 
           <form class="composer" id="composer">
-            <div class="attachments" id="attachments" hidden></div>
-            <textarea
-              id="input"
-              rows="1"
-              placeholder="Message the model…  (Enter to send, Shift+Enter for a newline)"
-              aria-label="Message"
-            ></textarea>
-            <div class="composer-row">
-              <button type="button" class="icon-btn" id="attach-btn" title="Attach a text file" aria-label="Attach a text file">
-                <svg><use href="#i-clip" /></svg>
-              </button>
-              <button type="button" class="icon-btn" id="mic-btn" title="Dictate" aria-label="Dictate" hidden>
-                <svg><use href="#i-mic" /></svg>
-              </button>
+            <div class="files" id="attachments" hidden></div>
+            <textarea id="input" rows="1" placeholder="Message the model…" aria-label="Message"></textarea>
+            <div class="composer-bar">
+              <button type="button" class="btn-icon" id="attach-btn" title="Attach text file" aria-label="Attach text file"><svg><use href="#i-clip" /></svg></button>
+              <button type="button" class="btn-icon" id="mic-btn" title="Dictate" aria-label="Dictate" hidden><svg><use href="#i-mic" /></svg></button>
               <span class="grow"></span>
-              <button type="submit" class="send" id="send" disabled>
-                <svg><use href="#i-send" /></svg>
-                <span>Send</span>
-              </button>
-              <button type="button" class="send stop" id="stop" hidden>
-                <svg><use href="#i-stop" /></svg>
-                <span>Stop</span>
-              </button>
+              <button type="submit" class="btn-send" id="send" disabled>Send</button>
+              <button type="button" class="btn-send stop" id="stop" hidden>Stop</button>
             </div>
-            <input type="file" id="file" accept=".txt,.md,.markdown,.json,.csv,.log,text/*" multiple hidden />
+            <input type="file" id="file" accept=".txt,.md,.json,.csv,.log,text/*" multiple hidden />
           </form>
         </div>
       </div>
     </div>
 
-    <!-- model library -->
-    <dialog class="sheet" id="models" aria-labelledby="models-title">
+    <dialog id="models" class="sheet">
       <div class="sheet-body">
-        <header class="sheet-head">
-          <h2 id="models-title">Model library</h2>
-          <button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-x" /></svg></button>
-        </header>
+        <div class="sheet-head"><h2>Models</h2><button class="btn-icon" data-close aria-label="Close"><svg><use href="#i-x" /></svg></button></div>
         <p class="hint" id="gpu-hint"></p>
-        <div class="model-list" id="model-list"></div>
-        <p class="hint">Downloads are cached by your browser. Removing a model frees the disk space.</p>
+        <div id="model-list" class="model-list"></div>
+        <p class="hint">Weights are cached by the browser. Remove one to reclaim disk space.</p>
       </div>
     </dialog>
 
-    <!-- settings -->
-    <dialog class="sheet" id="settings" aria-labelledby="settings-title">
+    <dialog id="settings" class="sheet">
       <form class="sheet-body" method="dialog">
-        <header class="sheet-head">
-          <h2 id="settings-title">Settings</h2>
-          <button class="icon-btn" type="button" data-close aria-label="Close"><svg><use href="#i-x" /></svg></button>
-        </header>
+        <div class="sheet-head"><h2>Settings</h2><button type="button" class="btn-icon" data-close aria-label="Close"><svg><use href="#i-x" /></svg></button></div>
 
         <fieldset>
           <legend>Persona</legend>
-          <div class="presets" id="presets"></div>
-          <label class="field">
-            <span>System prompt</span>
-            <textarea id="system" rows="4"></textarea>
-          </label>
+          <div id="presets" class="presets"></div>
+          <label class="field"><span>System prompt</span><textarea id="system" rows="4"></textarea></label>
         </fieldset>
 
         <fieldset>
           <legend>Sampling</legend>
-          <label class="field"><span>Temperature <output id="temp-out"></output></span>
-            <input id="temp" type="range" min="0" max="1.5" step="0.05" /></label>
-          <label class="field"><span>Top-p <output id="topp-out"></output></span>
-            <input id="topp" type="range" min="0.1" max="1" step="0.05" /></label>
-          <label class="field"><span>Max new tokens <output id="max-out"></output></span>
-            <input id="max" type="range" min="64" max="2048" step="64" /></label>
-          <label class="field"><span>Repetition penalty <output id="rep-out"></output></span>
-            <input id="rep" type="range" min="1" max="1.4" step="0.01" /></label>
+          <label class="field"><span>Temperature <output id="temp-out"></output></span><input id="temp" type="range" min="0" max="1.5" step="0.05" /></label>
+          <label class="field"><span>Top-p <output id="topp-out"></output></span><input id="topp" type="range" min="0.1" max="1" step="0.05" /></label>
+          <label class="field"><span>Max new tokens <output id="max-out"></output></span><input id="max" type="range" min="64" max="2048" step="64" /></label>
+          <label class="field"><span>Repetition penalty <output id="rep-out"></output></span><input id="rep" type="range" min="1" max="1.4" step="0.01" /></label>
         </fieldset>
 
         <fieldset>
           <legend>Conversation</legend>
-          <label class="field"><span>Context turns kept <output id="turns-out"></output></span>
-            <input id="turns" type="range" min="0" max="40" step="2" /></label>
-          <label class="row"><input id="markdown" type="checkbox" /> Render markdown</label>
-          <label class="row"><input id="autoscroll" type="checkbox" /> Follow output while streaming</label>
+          <label class="field"><span>Context turns <output id="turns-out"></output></span><input id="turns" type="range" min="0" max="40" step="2" /></label>
+          <label class="check"><input id="markdown" type="checkbox" /> Render markdown</label>
+          <label class="check"><input id="autoscroll" type="checkbox" /> Follow output</label>
         </fieldset>
 
         <fieldset>
           <legend>Data</legend>
-          <div class="btn-row">
-            <button type="button" class="ghost" id="import-btn">Import chats</button>
-            <button type="button" class="ghost" id="export-all">Export all</button>
-            <button type="button" class="ghost danger" id="wipe">Delete everything</button>
+          <div class="row">
+            <button type="button" class="btn-ghost" id="import-btn">Import</button>
+            <button type="button" class="btn-ghost" id="export-all">Export all</button>
+            <button type="button" class="btn-ghost danger" id="wipe">Delete all</button>
           </div>
           <input type="file" id="import-file" accept="application/json" hidden />
         </fieldset>
 
         <div class="sheet-foot">
-          <button type="button" class="ghost" id="reset">Reset settings</button>
-          <button value="close">Done</button>
+          <button type="button" class="btn-ghost" id="reset">Reset</button>
+          <button value="close" class="btn-primary">Done</button>
         </div>
       </form>
     </dialog>
 
-    <!-- command palette -->
-    <dialog class="palette" id="palette" aria-label="Command palette">
-      <input id="palette-input" placeholder="Type a command…" aria-label="Command" autocomplete="off" />
+    <dialog id="diag" class="sheet">
+      <div class="sheet-body">
+        <div class="sheet-head"><h2>Diagnostics</h2><button class="btn-icon" data-close aria-label="Close"><svg><use href="#i-x" /></svg></button></div>
+        <pre id="diag-body" class="diag"></pre>
+        <div class="sheet-foot">
+          <button type="button" class="btn-ghost" id="diag-clear">Clear model cache</button>
+          <button type="button" class="btn-primary" id="diag-copy">Copy</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="palette" class="palette">
+      <input id="palette-input" placeholder="Command…" aria-label="Command" />
       <ul id="palette-list" role="listbox"></ul>
     </dialog>
 
-    <!-- onboarding -->
-    <dialog class="sheet onboarding" id="onboarding" aria-labelledby="onb-title">
+    <dialog id="onboarding" class="sheet">
       <div class="sheet-body">
-        <h2 id="onb-title">Chat privately, on your own machine</h2>
-        <p>
-          The model is downloaded once and executed by your GPU. Messages, prompts and weights never touch a
-          server after that — there is no account and no API key.
-        </p>
+        <h2>Runs on your machine</h2>
+        <p class="hint">The model downloads once and executes locally. No account, no key, no server.</p>
         <ul class="ticks">
-          <li>Needs WebGPU: Edge 113+, Chrome 113+, or Safari 26+.</li>
-          <li>First model download is about 1.7 GB.</li>
-          <li>Everything is stored locally in your browser.</li>
+          <li>Needs WebGPU (Edge, Chrome 113+, Safari 26+) for usable speed.</li>
+          <li>First download is about 1.7 GB.</li>
+          <li>Chats are stored in this browser only.</li>
         </ul>
         <div class="sheet-foot">
-          <button type="button" class="ghost" data-close>Browse first</button>
-          <button type="button" id="onb-load">Load the recommended model</button>
+          <button type="button" class="btn-ghost" data-close>Later</button>
+          <button type="button" class="btn-primary" id="onb-load">Load model</button>
         </div>
       </div>
     </dialog>
