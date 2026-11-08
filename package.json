@@ -1,11 +1,12 @@
 {
-  "name": "vite-typescript-starter",
+  "name": "local-chat",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
+    "check": "tsc --noEmit",
     "preview": "vite preview"
   },
   "devDependencies": {
